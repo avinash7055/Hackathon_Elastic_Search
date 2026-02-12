@@ -1,0 +1,160 @@
+{
+    "tools": [
+        {
+            "toolId": "pharma.scan_adverse_event_trends",
+            "name": "Scan Adverse Event Trends",
+            "description": "Scans the FAERS database for adverse event reporting trends over time, grouped by drug. Use this tool first to identify which drugs have unusually high or increasing reporting volumes. Returns event counts per drug per time bucket.\n\nInput: time_range (e.g. 'last 90 days'), bucket_size (e.g. '1 month').\nLimitations: Returns top 20 drugs by volume.\nRelated: Use pharma.calculate_reporting_ratio to analyze specific drug-reaction pairs identified by this scan.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "time_range",
+                    "description": "How far back to scan (e.g., '90', '180', '365' days)",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | WHERE report_date >= NOW() - ?time_range::INT * 1 DAY | STATS event_count = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)), fatal_count = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)) BY drug_name | SORT event_count DESC | LIMIT 20"
+        },
+        {
+            "toolId": "pharma.calculate_reporting_ratio",
+            "name": "Calculate Proportional Reporting Ratio",
+            "description": "Calculates the Proportional Reporting Ratio (PRR) for a specific drug-reaction pair. PRR > 2 with 3+ cases suggests a potential safety signal. PRR compares the proportion of a specific reaction for a drug against the proportion of that reaction for all other drugs.\n\nInput: drug_name and reaction_term.\nUsage: Use after pharma.scan_adverse_event_trends identifies a drug with high volumes, to check if specific reactions are disproportionately reported.\nNote: A PRR > 2.0 with chi-square > 4 and N >= 3 meets the classic signal threshold.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug to analyze",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "reaction_term",
+                    "description": "The adverse reaction term (MedDRA PT) to analyze",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | STATS drug_reaction = COUNT(CASE(drug_name == ?drug_name AND reaction_term == ?reaction_term, 1, null)), drug_total = COUNT(CASE(drug_name == ?drug_name, 1, null)), other_reaction = COUNT(CASE(drug_name != ?drug_name AND reaction_term == ?reaction_term, 1, null)), other_total = COUNT(CASE(drug_name != ?drug_name, 1, null)) | EVAL prr = (drug_reaction * 1.0 / drug_total) / (other_reaction * 1.0 / other_total), case_count = drug_reaction | KEEP drug_reaction, drug_total, other_reaction, other_total, prr, case_count"
+        },
+        {
+            "toolId": "pharma.detect_temporal_spike",
+            "name": "Detect Temporal Spike",
+            "description": "Compares recent adverse event reporting rate against a historical baseline to detect temporal spikes. A spike ratio > 2.0 indicates the recent period has significantly more reports than the baseline and warrants investigation.\n\nInput: drug_name, lookback_days (recent window), baseline_days (historical comparison window).\nUsage: Use to confirm if a drug flagged by pharma.scan_adverse_event_trends shows a genuine temporal increase vs just high baseline volume.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug to analyze",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "lookback_days",
+                    "description": "Number of days for the recent window (e.g., '90')",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "baseline_days",
+                    "description": "Number of days for the baseline period before the lookback (e.g., '365')",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name | STATS recent_count = COUNT(CASE(report_date >= NOW() - ?lookback_days::INT * 1 DAY, 1, null)), baseline_count = COUNT(CASE(report_date < NOW() - ?lookback_days::INT * 1 DAY AND report_date >= NOW() - ?baseline_days::INT * 1 DAY, 1, null)) | EVAL recent_daily_rate = recent_count * 1.0 / ?lookback_days::INT, baseline_daily_rate = baseline_count * 1.0 / (?baseline_days::INT - ?lookback_days::INT), spike_ratio = recent_daily_rate / baseline_daily_rate | KEEP recent_count, baseline_count, recent_daily_rate, baseline_daily_rate, spike_ratio"
+        },
+        {
+            "toolId": "pharma.analyze_patient_demographics",
+            "name": "Analyze Patient Demographics",
+            "description": "Analyzes the demographic profile (age groups, sex distribution) of patients reporting adverse events for a specific drug-reaction pair. Use to understand WHO is most affected.\n\nInput: drug_name and optionally reaction_term.\nUsage: Use during case investigation to identify high-risk patient subgroups.\nRelated: Combine with pharma.check_outcome_severity to see if specific demographics have worse outcomes.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "reaction_term",
+                    "description": "The adverse reaction term to filter by. Use empty string for all reactions.",
+                    "type": "string",
+                    "required": false
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name AND (LENGTH(?reaction_term) == 0 OR reaction_term == ?reaction_term) | STATS count = COUNT(*), avg_age = AVG(patient_age), avg_weight = AVG(patient_weight_kg) BY patient_sex, patient_age_group | SORT count DESC"
+        },
+        {
+            "toolId": "pharma.find_concomitant_drugs",
+            "name": "Find Concomitant Drugs",
+            "description": "Finds the most frequently co-reported drugs in adverse event reports for a specific drug. Helps identify potential drug-drug interactions that could contribute to adverse events.\n\nInput: drug_name.\nUsage: Critical for investigating signals where drug interactions may be the root cause (e.g., rhabdomyolysis with statin co-prescription).\nLimitations: Returns top 15 co-reported drugs.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the primary suspect drug",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name AND LENGTH(TO_STRING(concomitant_drugs)) > 2 | STATS co_report_count = COUNT(*), serious_pct = COUNT(CASE(serious == true, 1, null)) * 100.0 / COUNT(*) BY concomitant_drugs | SORT co_report_count DESC | LIMIT 15"
+        },
+        {
+            "toolId": "pharma.check_outcome_severity",
+            "name": "Check Outcome Severity",
+            "description": "Analyzes the severity of outcomes (fatal, hospitalization, disability, etc.) for adverse events of a specific drug, optionally filtered by reaction. Higher serious outcome rates strengthen a safety signal.\n\nInput: drug_name, optionally reaction_term.\nUsage: Use to assess the clinical significance of a detected signal. A high fatality or hospitalization rate elevates the signal priority.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "reaction_term",
+                    "description": "Optional reaction term filter",
+                    "type": "string",
+                    "required": false
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name AND (LENGTH(?reaction_term) == 0 OR reaction_term == ?reaction_term) | STATS total = COUNT(*), fatal = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)), hospitalized = COUNT(CASE(outcome_detail == \"Hospitalization\", 1, null)), life_threatening = COUNT(CASE(seriousness_criteria == \"Life-threatening\", 1, null)), disabled = COUNT(CASE(outcome_detail == \"Disability\", 1, null)), serious_total = COUNT(CASE(serious == true, 1, null)) | EVAL fatality_rate = fatal * 100.0 / total, serious_rate = serious_total * 100.0 / total"
+        },
+        {
+            "toolId": "pharma.geo_distribution",
+            "name": "Geographic Distribution",
+            "description": "Groups adverse event reports by reporter country for a specific drug. Helps identify geographic clustering that may indicate regional prescribing patterns, batch-specific issues, or population-specific risks.\n\nInput: drug_name, time_range (days).\nUsage: Use during investigation to understand the geographic spread of a safety signal.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug",
+                    "type": "string",
+                    "required": true
+                },
+                {
+                    "name": "time_range",
+                    "description": "Number of days to look back (e.g., '365')",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name AND report_date >= NOW() - ?time_range::INT * 1 DAY | STATS event_count = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)) BY reporter_country, reporter_country_code | SORT event_count DESC | LIMIT 20"
+        },
+        {
+            "toolId": "pharma.compile_signal_summary",
+            "name": "Compile Signal Summary",
+            "description": "Compiles a comprehensive signal profile for a specific drug — total reports, reaction breakdown, temporal trend, and severity. Use this as the final data-gathering step before writing a safety report.\n\nInput: drug_name.\nUsage: Use as the last tool before generating a safety assessment report. Provides all key metrics in one call.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug to compile a full profile for",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM faers_reports | WHERE drug_name == ?drug_name | STATS total_reports = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)), fatal_count = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)), last_90d = COUNT(CASE(report_date >= NOW() - 90 DAY, 1, null)), last_180d = COUNT(CASE(report_date >= NOW() - 180 DAY, 1, null)), avg_patient_age = AVG(patient_age) BY reaction_term | SORT total_reports DESC | LIMIT 20"
+        }
+    ]
+}

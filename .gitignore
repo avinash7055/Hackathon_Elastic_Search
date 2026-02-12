@@ -1,0 +1,37 @@
+# ── Python ───────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+*.egg
+
+# ── Environment ──────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Node / Frontend ─────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── IDE ──────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ───────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Project ──────────────────────────────
+*.db
+pharma_vigil_checkpoints.db
+*.log

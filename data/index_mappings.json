@@ -1,0 +1,87 @@
+{
+    "faers_reports": {
+        "mappings": {
+            "properties": {
+                "report_id": {
+                    "type": "keyword"
+                },
+                "report_date": {
+                    "type": "date"
+                },
+                "receive_date": {
+                    "type": "date"
+                },
+                "reporter_type": {
+                    "type": "keyword"
+                },
+                "reporter_country": {
+                    "type": "keyword"
+                },
+                "reporter_country_code": {
+                    "type": "keyword"
+                },
+                "report_source": {
+                    "type": "keyword"
+                },
+                "serious": {
+                    "type": "boolean"
+                },
+                "seriousness_criteria": {
+                    "type": "keyword"
+                },
+                "patient_age": {
+                    "type": "integer"
+                },
+                "patient_age_group": {
+                    "type": "keyword"
+                },
+                "patient_sex": {
+                    "type": "keyword"
+                },
+                "patient_weight_kg": {
+                    "type": "float"
+                },
+                "drug_name": {
+                    "type": "keyword"
+                },
+                "drug_generic_name": {
+                    "type": "keyword"
+                },
+                "drug_characterization": {
+                    "type": "keyword"
+                },
+                "drug_indication": {
+                    "type": "keyword"
+                },
+                "drug_route": {
+                    "type": "keyword"
+                },
+                "drug_dose": {
+                    "type": "text"
+                },
+                "concomitant_drugs": {
+                    "type": "keyword"
+                },
+                "reaction_term": {
+                    "type": "keyword"
+                },
+                "reaction_meddra_pt": {
+                    "type": "keyword"
+                },
+                "reaction_outcome": {
+                    "type": "keyword"
+                },
+                "outcome_detail": {
+                    "type": "keyword"
+                },
+                "narrative": {
+                    "type": "text"
+                }
+            }
+        },
+        "settings": {
+            "number_of_shards": 1,
+            "number_of_replicas": 0
+        }
+    }
+}
