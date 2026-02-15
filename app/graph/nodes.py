@@ -1,7 +1,8 @@
 """LangGraph node functions for the PharmaVigil investigation pipeline.
 
 Each node communicates with an Agent Builder agent via the Converse API
-and updates the shared state with results.
+and updates the shared state with results — including agent reasoning traces
+for the transparency panel.
 """
 
 import logging
@@ -13,6 +14,141 @@ from app.elastic_client import elastic_agent_client
 from app.graph.state import PharmaVigilState
 
 logger = logging.getLogger(__name__)
+
+# ── Tool metadata lookup ──────────────────────────────────
+
+TOOL_QUERIES = {
+    "pharma.scan_adverse_event_trends": (
+        "FROM faers_reports | WHERE report_date >= NOW() - ?time_range::INT * 1 DAY "
+        "| STATS event_count = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)), "
+        "fatal_count = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)) BY drug_name "
+        "| SORT event_count DESC | LIMIT 20"
+    ),
+    "pharma.calculate_reporting_ratio": (
+        "FROM faers_reports | STATS drug_reaction = COUNT(CASE(drug_name == ?drug_name AND "
+        "reaction_term == ?reaction_term, 1, null)), drug_total = COUNT(CASE(drug_name == ?drug_name, 1, null)), "
+        "other_reaction = COUNT(CASE(drug_name != ?drug_name AND reaction_term == ?reaction_term, 1, null)), "
+        "other_total = COUNT(CASE(drug_name != ?drug_name, 1, null)) "
+        "| EVAL prr = (drug_reaction * 1.0 / drug_total) / (other_reaction * 1.0 / other_total) | KEEP prr, case_count"
+    ),
+    "pharma.detect_temporal_spike": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS recent_count, baseline_count | EVAL spike_ratio = recent_daily_rate / baseline_daily_rate"
+    ),
+    "pharma.analyze_patient_demographics": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS count = COUNT(*), avg_age = AVG(patient_age) BY patient_sex, patient_age_group"
+    ),
+    "pharma.find_concomitant_drugs": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS co_report_count = COUNT(*), serious_pct BY concomitant_drugs | SORT co_report_count DESC"
+    ),
+    "pharma.check_outcome_severity": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS total, fatal, hospitalized, life_threatening | EVAL fatality_rate, serious_rate"
+    ),
+    "pharma.geo_distribution": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS event_count, serious_count BY reporter_country | SORT event_count DESC"
+    ),
+    "pharma.compile_signal_summary": (
+        "FROM faers_reports | WHERE drug_name == ?drug_name "
+        "| STATS total_reports, serious_count, fatal_count, last_90d, avg_patient_age BY reaction_term"
+    ),
+}
+
+TOOL_DESCRIPTIONS = {
+    "pharma.scan_adverse_event_trends": "Scan Adverse Event Trends",
+    "pharma.calculate_reporting_ratio": "Calculate Proportional Reporting Ratio (PRR)",
+    "pharma.detect_temporal_spike": "Detect Temporal Spike",
+    "pharma.analyze_patient_demographics": "Analyze Patient Demographics",
+    "pharma.find_concomitant_drugs": "Find Concomitant Drugs",
+    "pharma.check_outcome_severity": "Check Outcome Severity",
+    "pharma.geo_distribution": "Geographic Distribution",
+    "pharma.compile_signal_summary": "Compile Signal Summary",
+}
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_reasoning_from_response(agent_name: str, result: dict) -> list[dict]:
+    """Extract structured reasoning steps from an Agent Builder Converse API response.
+    
+    Parses tool calls and the agent's text response to build a reasoning trace.
+    """
+    steps = []
+    tool_calls = result.get("tool_calls", [])
+    response_text = result.get("response", "")
+
+    # Extract reasoning from the agent's textual thinking
+    # Look for patterns that indicate the agent is reasoning
+    thinking_patterns = [
+        r"(?:I (?:will|need to|should|am going to|can see|notice|observe).*?[.!])",
+        r"(?:Let me.*?[.!])",
+        r"(?:Based on.*?[.!])",
+        r"(?:The (?:data|results|analysis) (?:shows?|indicates?|suggests?|reveals?).*?[.!])",
+        r"(?:This (?:indicates?|suggests?|shows?|means?).*?[.!])",
+        r"(?:Looking at.*?[.!])",
+    ]
+
+    # Parse tool calls into reasoning steps  
+    for tc in tool_calls:
+        tool_id = tc.get("toolId", tc.get("tool_id", tc.get("name", "unknown_tool")))
+        tool_input = tc.get("parameters", tc.get("input", tc.get("args", {})))
+        tool_result_data = tc.get("result", tc.get("output", ""))
+
+        # Emit tool_call step
+        steps.append({
+            "agent": agent_name,
+            "step_type": "tool_call",
+            "content": TOOL_DESCRIPTIONS.get(tool_id, tool_id),
+            "tool_name": tool_id,
+            "tool_input": tool_input if isinstance(tool_input, dict) else {},
+            "tool_query": TOOL_QUERIES.get(tool_id, ""),
+            "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+
+        # Emit tool_result step if we have one
+        if tool_result_data:
+            result_summary = str(tool_result_data)[:300]
+            steps.append({
+                "agent": agent_name,
+                "step_type": "tool_result",
+                "content": f"Results from {TOOL_DESCRIPTIONS.get(tool_id, tool_id)}",
+                "tool_name": tool_id,
+                "tool_input": {},
+                "tool_query": "",
+                "tool_result": result_summary,
+                "timestamp": _now_iso(),
+            })
+
+    # Extract key thinking sentences from the response
+    sentences = re.split(r'(?<=[.!?])\s+', response_text)
+    thinking_sentences = []
+    for sentence in sentences[:15]:  # Check first 15 sentences
+        sentence = sentence.strip()
+        if len(sentence) > 20 and any(re.search(p, sentence, re.IGNORECASE) for p in thinking_patterns):
+            thinking_sentences.append(sentence)
+            if len(thinking_sentences) >= 4:  # Cap at 4 thinking steps per agent call
+                break
+
+    # Interleave thinking steps before tool calls
+    for i, thought in enumerate(thinking_sentences):
+        steps.insert(min(i, len(steps)), {
+            "agent": agent_name,
+            "step_type": "thinking",
+            "content": thought,
+            "tool_name": "",
+            "tool_input": {},
+            "tool_query": "",
+            "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+
+    return steps
 
 
 def _extract_signals_from_response(response_text: str) -> list[dict]:
@@ -96,6 +232,15 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
 
     query = state.get("query", "Scan for any emerging drug safety signals in FAERS data from the last 90 days")
 
+    reasoning = []
+    reasoning.append({
+        "agent": "signal_scanner",
+        "step_type": "thinking",
+        "content": f"Starting signal surveillance scan. Analyzing FAERS database for anomalies in adverse event reporting patterns.",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    })
+
     try:
         result = await elastic_agent_client.converse(
             agent_id="signal_scanner",
@@ -106,6 +251,10 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
         response_text = result["response"]
         conversation_id = result["conversation_id"]
 
+        # Extract reasoning trace from agent response
+        agent_reasoning = _extract_reasoning_from_response("signal_scanner", result)
+        reasoning.extend(agent_reasoning)
+
         # Parse structured signals from response
         signals = _extract_signals_from_response(response_text)
 
@@ -115,12 +264,32 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
         for s in signals:
             s["raw_response"] = response_text
 
+        # Add conclusion step
+        if signals:
+            signal_summary = ", ".join(f"{s['drug_name']}→{s['reaction_term']} (PRR: {s['prr']})" for s in signals)
+            reasoning.append({
+                "agent": "signal_scanner",
+                "step_type": "conclusion",
+                "content": f"Signal scan complete. Detected {len(signals)} potential safety signal(s): {signal_summary}. Routing to Case Investigator for deep analysis.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+        else:
+            reasoning.append({
+                "agent": "signal_scanner",
+                "step_type": "conclusion",
+                "content": "Signal scan complete. No statistically significant safety signals detected in the current time window.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+
         return {
             "status": "investigating" if signals else "complete",
             "signals": signals,
             "scanner_conversation_id": conversation_id,
             "current_agent": "case_investigator" if signals else "none",
             "total_signals_found": len(signals),
+            "reasoning_trace": reasoning,
             "progress_messages": [
                 f"Signal Scanner completed: {len(signals)} signal(s) detected"
             ],
@@ -128,9 +297,17 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
 
     except Exception as e:
         logger.error(f"Signal Scanner failed: {e}")
+        reasoning.append({
+            "agent": "signal_scanner",
+            "step_type": "conclusion",
+            "content": f"Signal Scanner encountered an error: {str(e)}",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
         return {
             "status": "error",
             "errors": [f"Signal Scanner error: {str(e)}"],
+            "reasoning_trace": reasoning,
             "progress_messages": [f"Signal Scanner failed: {str(e)}"],
         }
 
@@ -143,17 +320,35 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
     if not signals:
         return {
             "status": "complete",
+            "reasoning_trace": [],
             "progress_messages": ["No signals to investigate"],
         }
 
     investigations = []
     conversation_id = state.get("investigator_conversation_id")
+    reasoning = []
+
+    reasoning.append({
+        "agent": "case_investigator",
+        "step_type": "thinking",
+        "content": f"Beginning deep investigation of {len(signals)} flagged signal(s). Will analyze demographics, drug interactions, outcome severity, and geographic patterns for each.",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    })
 
     for i, signal in enumerate(signals):
         drug = signal.get("drug_name", "Unknown")
         reaction = signal.get("reaction_term", "Unknown")
 
         logger.info(f"Investigating signal {i+1}/{len(signals)}: {drug} → {reaction}")
+
+        reasoning.append({
+            "agent": "case_investigator",
+            "step_type": "thinking",
+            "content": f"Investigating signal {i+1}/{len(signals)}: {drug} → {reaction} (PRR: {signal.get('prr', 'N/A')}, Spike: {signal.get('spike_ratio', 'N/A')}x). Querying patient demographics, concomitant medications, and outcome severity.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
 
         message = (
             f"Investigate this flagged drug safety signal:\n"
@@ -175,6 +370,10 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
 
             conversation_id = result["conversation_id"]
 
+            # Extract reasoning from the investigator's response
+            agent_reasoning = _extract_reasoning_from_response("case_investigator", result)
+            reasoning.extend(agent_reasoning)
+
             investigation = {
                 "drug_name": drug,
                 "reaction_term": reaction,
@@ -195,6 +394,14 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
 
             investigations.append(investigation)
 
+            reasoning.append({
+                "agent": "case_investigator",
+                "step_type": "conclusion",
+                "content": f"Investigation of {drug}→{reaction} complete. {'Drug interaction detected.' if investigation['interaction_detected'] else 'No significant drug interactions found.'} Full case analysis recorded.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+
         except Exception as e:
             logger.error(f"Investigation failed for {drug}: {e}")
             investigations.append({
@@ -203,6 +410,13 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
                 "raw_response": f"Error: {str(e)}",
                 "overall_assessment": f"Investigation failed: {str(e)}",
             })
+            reasoning.append({
+                "agent": "case_investigator",
+                "step_type": "conclusion",
+                "content": f"Investigation of {drug} failed: {str(e)}",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
 
     return {
         "status": "reporting",
@@ -210,6 +424,7 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
         "investigator_conversation_id": conversation_id,
         "current_agent": "safety_reporter",
         "total_investigations": len(investigations),
+        "reasoning_trace": reasoning,
         "progress_messages": [
             f"Case Investigator completed: {len(investigations)} signal(s) investigated"
         ],
@@ -226,11 +441,21 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
     if not investigations:
         return {
             "status": "complete",
+            "reasoning_trace": [],
             "progress_messages": ["No investigations to report on"],
         }
 
     reports = []
     conversation_id = state.get("reporter_conversation_id")
+    reasoning = []
+
+    reasoning.append({
+        "agent": "safety_reporter",
+        "step_type": "thinking",
+        "content": f"Generating Drug Safety Signal Assessment Reports for {len(investigations)} investigated signal(s). Compiling statistical evidence, clinical context, and regulatory recommendations.",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    })
 
     for i, investigation in enumerate(investigations):
         drug = investigation.get("drug_name", "Unknown")
@@ -243,6 +468,14 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
             (s for s in signals if s.get("drug_name") == drug),
             {},
         )
+
+        reasoning.append({
+            "agent": "safety_reporter",
+            "step_type": "thinking",
+            "content": f"Compiling safety report for {drug}→{reaction}. Using pharma.compile_signal_summary to gather comprehensive data profile before report generation.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
 
         message = (
             f"Generate a Drug Safety Signal Assessment Report for:\n\n"
@@ -265,6 +498,10 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
 
             conversation_id = result["conversation_id"]
 
+            # Extract reasoning from the reporter's response
+            agent_reasoning = _extract_reasoning_from_response("safety_reporter", result)
+            reasoning.extend(agent_reasoning)
+
             # Determine risk level from response
             risk_level = "MODERATE"
             resp_upper = result["response"].upper()
@@ -286,6 +523,14 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
 
             reports.append(report)
 
+            reasoning.append({
+                "agent": "safety_reporter",
+                "step_type": "conclusion",
+                "content": f"Safety report for {drug}→{reaction} generated. Risk level: {risk_level}. Report includes statistical evidence, clinical assessment, and recommended regulatory actions.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+
         except Exception as e:
             logger.error(f"Report generation failed for {drug}: {e}")
             reports.append({
@@ -294,6 +539,13 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
                 "risk_level": "UNKNOWN",
                 "report_markdown": f"Report generation failed: {str(e)}",
             })
+            reasoning.append({
+                "agent": "safety_reporter",
+                "step_type": "conclusion",
+                "content": f"Report generation for {drug} failed: {str(e)}",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
 
     return {
         "status": "complete",
@@ -301,6 +553,7 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
         "reporter_conversation_id": conversation_id,
         "current_agent": "none",
         "total_reports": len(reports),
+        "reasoning_trace": reasoning,
         "progress_messages": [
             f"Safety Reporter completed: {len(reports)} report(s) generated"
         ],
@@ -332,5 +585,12 @@ async def compile_results_node(state: PharmaVigilState) -> dict:
     return {
         "status": "complete",
         "current_agent": "none",
+        "reasoning_trace": [{
+            "agent": "system",
+            "step_type": "conclusion",
+            "content": summary,
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        }],
         "progress_messages": [summary],
     }

@@ -169,6 +169,7 @@ async def start_investigation(request: InvestigateRequest):
         "investigations": [],
         "reports": [],
         "progress": [],
+        "reasoning_trace": [],
     }
 
     # Run investigation in background
@@ -202,9 +203,14 @@ async def _run_investigation_background(investigation_id: str, query: str):
                 if "progress_messages" in state_update:
                     inv.setdefault("progress", []).extend(state_update["progress_messages"])
 
+                # Capture reasoning traces
+                reasoning_steps = state_update.get("reasoning_trace", [])
+                if reasoning_steps:
+                    inv.setdefault("reasoning_trace", []).extend(reasoning_steps)
+
                 investigations_store[investigation_id] = inv
 
-                # Broadcast to WebSocket clients
+                # Broadcast progress to WebSocket clients
                 await _broadcast_progress(investigation_id, {
                     "node": node_name,
                     "status": state_update.get("status", ""),
@@ -213,6 +219,14 @@ async def _run_investigation_background(investigation_id: str, query: str):
                     "investigations_count": len(inv.get("investigations", [])),
                     "reports_count": len(inv.get("reports", [])),
                 })
+
+                # Broadcast reasoning trace events separately for real-time UI
+                if reasoning_steps:
+                    await _broadcast_progress(investigation_id, {
+                        "type": "reasoning",
+                        "node": node_name,
+                        "steps": reasoning_steps,
+                    })
 
     except Exception as e:
         logger.error(f"Investigation {investigation_id} failed: {e}")
@@ -320,6 +334,7 @@ async def websocket_progress(websocket: WebSocket, investigation_id: str):
                 "investigations_count": len(inv.get("investigations", [])),
                 "reports_count": len(inv.get("reports", [])),
                 "progress": inv.get("progress", []),
+                "reasoning_trace": inv.get("reasoning_trace", []),
             },
         })
 

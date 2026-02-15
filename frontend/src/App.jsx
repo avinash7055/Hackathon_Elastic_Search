@@ -25,6 +25,41 @@ async function apiPost(path, body) {
     return res.json();
 }
 
+/* ── Suggested Queries ───────────────────────────────── */
+
+const SUGGESTED_QUERIES = [
+    {
+        label: 'Full Safety Scan',
+        icon: '🔍',
+        query: 'Scan for any emerging drug safety signals in the FAERS database from the last 90 days. Look for drugs with unusual spikes in adverse event reporting, particularly for serious reactions like cardiac events, hepatotoxicity, and rhabdomyolysis.',
+    },
+    {
+        label: 'Cardiac Signals',
+        icon: '❤️',
+        query: 'Investigate cardiac-related adverse events in the FAERS database. Look for drugs associated with arrhythmia, cardiac arrest, QT prolongation, and myocardial infarction with elevated PRR scores.',
+    },
+    {
+        label: 'Hepatotoxicity Check',
+        icon: '🫁',
+        query: 'Scan for hepatotoxicity signals. Identify drugs showing disproportionate reporting of liver injury, hepatic failure, jaundice, and elevated liver enzymes in recent FAERS submissions.',
+    },
+    {
+        label: 'Drug Interactions',
+        icon: '💊',
+        query: 'Analyze potential drug-drug interactions in FAERS data. Look for cases where concomitant drug usage correlates with increased serious adverse events, particularly fatal or life-threatening outcomes.',
+    },
+    {
+        label: 'Pediatric Safety',
+        icon: '👶',
+        query: 'Scan for adverse event signals in pediatric populations (age 0-17). Identify drugs with unusual adverse event patterns in children, focusing on developmental and neurological reactions.',
+    },
+    {
+        label: 'Rhabdomyolysis',
+        icon: '🦴',
+        query: 'Investigate rhabdomyolysis signals across all drugs. Identify medications with elevated PRR for muscle-related adverse events including rhabdomyolysis, myalgia, and elevated CK levels.',
+    },
+];
+
 /* ── Components ──────────────────────────────────────── */
 
 function KPICard({ label, value, colorClass, detail }) {
@@ -242,6 +277,166 @@ function SignalChart({ signals }) {
     );
 }
 
+/* ── Agent Reasoning Panel (NEW — Gap #1) ────────────── */
+
+function ReasoningStep({ step, index }) {
+    const [expanded, setExpanded] = useState(step.step_type === 'tool_call');
+
+    const agentLabels = {
+        signal_scanner: { name: 'Signal Scanner', icon: '🔍', color: 'var(--accent-blue)' },
+        case_investigator: { name: 'Case Investigator', icon: '🔬', color: 'var(--accent-orange)' },
+        safety_reporter: { name: 'Safety Reporter', icon: '📋', color: 'var(--accent-violet)' },
+        system: { name: 'System', icon: '⚙️', color: 'var(--text-muted)' },
+    };
+
+    const agent = agentLabels[step.agent] || agentLabels.system;
+
+    const stepIcons = {
+        thinking: '💭',
+        tool_call: '🔧',
+        tool_result: '📊',
+        conclusion: '✅',
+    };
+
+    const stepColors = {
+        thinking: 'reasoning-thinking',
+        tool_call: 'reasoning-tool-call',
+        tool_result: 'reasoning-tool-result',
+        conclusion: 'reasoning-conclusion',
+    };
+
+    return (
+        <div
+            className={`reasoning-step ${stepColors[step.step_type] || ''} animate-in`}
+            style={{ animationDelay: `${index * 60}ms` }}
+            onClick={() => step.step_type === 'tool_call' && setExpanded(!expanded)}
+        >
+            <div className="reasoning-step-header">
+                <span className="reasoning-step-icon">{stepIcons[step.step_type] || '•'}</span>
+                <span className="reasoning-step-type">{step.step_type?.toUpperCase()}</span>
+                <span className="reasoning-step-agent" style={{ color: agent.color }}>
+                    {agent.icon} {agent.name}
+                </span>
+            </div>
+            <div className="reasoning-step-content">{step.content}</div>
+
+            {/* Tool call details — expandable */}
+            {step.step_type === 'tool_call' && step.tool_name && (
+                <div className={`reasoning-tool-details ${expanded ? 'expanded' : ''}`}>
+                    <div className="reasoning-tool-name">
+                        <span className="tool-label">Tool:</span> {step.tool_name}
+                    </div>
+                    {step.tool_input && Object.keys(step.tool_input).length > 0 && (
+                        <div className="reasoning-tool-input">
+                            <span className="tool-label">Input:</span>
+                            <code>{JSON.stringify(step.tool_input, null, 2)}</code>
+                        </div>
+                    )}
+                    {step.tool_query && (
+                        <div className="reasoning-esql-query">
+                            <span className="tool-label">ES|QL:</span>
+                            <pre className="esql-code">{step.tool_query}</pre>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Tool result data */}
+            {step.step_type === 'tool_result' && step.tool_result && (
+                <div className="reasoning-tool-result-data">
+                    <code>{step.tool_result}</code>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function AgentReasoningPanel({ reasoningTrace, isRunning }) {
+    const panelRef = useRef(null);
+    const [isCollapsed, setIsCollapsed] = useState(false);
+
+    useEffect(() => {
+        if (panelRef.current && !isCollapsed) {
+            panelRef.current.scrollTop = panelRef.current.scrollHeight;
+        }
+    }, [reasoningTrace, isCollapsed]);
+
+    // Group steps by agent
+    const agentGroups = {};
+    (reasoningTrace || []).forEach(step => {
+        const key = step.agent || 'system';
+        if (!agentGroups[key]) agentGroups[key] = [];
+        agentGroups[key].push(step);
+    });
+
+    const stepCount = (reasoningTrace || []).length;
+    const toolCallCount = (reasoningTrace || []).filter(s => s.step_type === 'tool_call').length;
+
+    if (!reasoningTrace || reasoningTrace.length === 0) {
+        return (
+            <div className="empty-state" style={{ padding: '20px' }}>
+                <div className="empty-state-icon">🧠</div>
+                <div className="empty-state-text">
+                    Agent reasoning will appear here in real-time as agents think, select tools, run ES|QL queries, and draw conclusions.
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="reasoning-panel">
+            <div className="reasoning-panel-toolbar">
+                <div className="reasoning-panel-stats">
+                    <span className="reasoning-stat">
+                        <span className="reasoning-stat-value">{stepCount}</span> steps
+                    </span>
+                    <span className="reasoning-stat">
+                        <span className="reasoning-stat-value">{toolCallCount}</span> tool calls
+                    </span>
+                    {isRunning && <span className="spinner" style={{ marginLeft: 8 }} />}
+                </div>
+                <button
+                    className="reasoning-toggle-btn"
+                    onClick={() => setIsCollapsed(!isCollapsed)}
+                >
+                    {isCollapsed ? '▼ Expand' : '▲ Collapse'}
+                </button>
+            </div>
+            {!isCollapsed && (
+                <div className="reasoning-steps-container" ref={panelRef}>
+                    {(reasoningTrace || []).map((step, i) => (
+                        <ReasoningStep key={i} step={step} index={i} />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ── Query Suggestions (NEW — Gap #2) ────────────────── */
+
+function QuerySuggestions({ onSelect, disabled }) {
+    return (
+        <div className="query-suggestions">
+            <div className="query-suggestions-label">Quick queries:</div>
+            <div className="query-suggestions-chips">
+                {SUGGESTED_QUERIES.map((sq, i) => (
+                    <button
+                        key={i}
+                        className="query-chip"
+                        onClick={() => onSelect(sq.query)}
+                        disabled={disabled}
+                        title={sq.query}
+                    >
+                        <span className="query-chip-icon">{sq.icon}</span>
+                        {sq.label}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 /* ── Main App ────────────────────────────────────────── */
 
 export default function App() {
@@ -250,14 +445,12 @@ export default function App() {
     const [signals, setSignals] = useState([]);
     const [reports, setReports] = useState([]);
     const [progressMessages, setProgressMessages] = useState([]);
+    const [reasoningTrace, setReasoningTrace] = useState([]);
     const [isRunning, setIsRunning] = useState(false);
-    const [query, setQuery] = useState(
-        'Scan for any emerging drug safety signals in the FAERS database from the last 90 days. ' +
-        'Look for drugs with unusual spikes in adverse event reporting, particularly for serious ' +
-        'reactions like cardiac events, hepatotoxicity, and rhabdomyolysis.'
-    );
+    const [query, setQuery] = useState('');
     const [currentAgent, setCurrentAgent] = useState('');
     const [status, setStatus] = useState('idle');
+    const [showReasoning, setShowReasoning] = useState(true);
     const wsRef = useRef(null);
 
     // Health check
@@ -280,6 +473,13 @@ export default function App() {
                 const msg = JSON.parse(event.data);
                 if (msg.type === 'progress') {
                     const data = msg.data;
+
+                    // Handle reasoning trace events
+                    if (data.type === 'reasoning' && data.steps) {
+                        setReasoningTrace(prev => [...prev, ...data.steps]);
+                        return;
+                    }
+
                     setProgressMessages(prev => [...prev, ...(data.progress || [])]);
                     if (data.status) setStatus(data.status);
                     if (data.node === 'scan_signals') setCurrentAgent('case_investigator');
@@ -300,6 +500,7 @@ export default function App() {
                 if (msg.type === 'current_state') {
                     const data = msg.data;
                     setProgressMessages(data.progress || []);
+                    setReasoningTrace(data.reasoning_trace || []);
                     setStatus(data.status);
                 }
             } catch (e) {
@@ -317,6 +518,7 @@ export default function App() {
             setInvestigation(inv);
             setSignals(inv.signals || []);
             setReports(inv.reports || []);
+            setReasoningTrace(inv.reasoning_trace || []);
         } catch (e) {
             console.error('Failed to load investigation:', e);
         }
@@ -324,16 +526,19 @@ export default function App() {
 
     // Start investigation
     const startInvestigation = async () => {
+        const q = query || SUGGESTED_QUERIES[0].query;
         setIsRunning(true);
         setStatus('scanning');
         setCurrentAgent('signal_scanner');
         setSignals([]);
         setReports([]);
         setProgressMessages(['Starting investigation...']);
+        setReasoningTrace([]);
         setInvestigation(null);
+        setShowReasoning(true);
 
         try {
-            const result = await apiPost('/investigate', { query });
+            const result = await apiPost('/investigate', { query: q });
             const invId = result.investigation_id;
             setInvestigation({ id: invId, status: 'scanning' });
             connectWebSocket(invId);
@@ -346,6 +551,7 @@ export default function App() {
                     setSignals(inv.signals || []);
                     setReports(inv.reports || []);
                     setProgressMessages(inv.progress || []);
+                    setReasoningTrace(inv.reasoning_trace || []);
                     setStatus(inv.status);
 
                     if (inv.status === 'complete' || inv.status === 'error') {
@@ -424,29 +630,67 @@ export default function App() {
                             {isRunning && <span className="spinner" />}
                         </div>
                         <div className="card-body">
+                            {/* Natural Language Query Input + Suggestions */}
                             <div className="investigation-trigger">
-                                <input
-                                    type="text"
-                                    className="investigation-input"
-                                    value={query}
-                                    onChange={(e) => setQuery(e.target.value)}
-                                    placeholder="Enter investigation query..."
-                                    disabled={isRunning}
-                                />
+                                <div className="query-input-wrapper">
+                                    <input
+                                        type="text"
+                                        className="investigation-input"
+                                        value={query}
+                                        onChange={(e) => setQuery(e.target.value)}
+                                        placeholder="Ask PharmaVigil AI anything... e.g. 'Are there cardiac signals for Cardizol-X?'"
+                                        disabled={isRunning}
+                                        onKeyDown={(e) => e.key === 'Enter' && !isRunning && startInvestigation()}
+                                    />
+                                </div>
                                 <button
                                     className="btn btn-primary"
                                     onClick={startInvestigation}
                                     disabled={isRunning}
                                 >
-                                    {isRunning ? 'Investigating...' : '🔍 Start Investigation'}
+                                    {isRunning ? 'Investigating...' : '🔍 Investigate'}
                                 </button>
                             </div>
+
+                            {/* Query Suggestion Chips (Gap #2) */}
+                            <QuerySuggestions onSelect={setQuery} disabled={isRunning} />
 
                             <PipelineSteps currentAgent={currentAgent} status={status} />
                             <ProgressLog messages={progressMessages} />
                         </div>
                     </div>
                 </div>
+
+                {/* Agent Reasoning Panel (Gap #1) */}
+                {(status !== 'idle' || reasoningTrace.length > 0) && (
+                    <div className="dashboard-grid full-width">
+                        <div className="card reasoning-card animate-slide-up">
+                            <div className="card-header">
+                                <div className="card-title">
+                                    <span className="card-title-icon">🧠</span>
+                                    Agent Reasoning Trace
+                                    {reasoningTrace.length > 0 && (
+                                        <span className="reasoning-badge">{reasoningTrace.length} steps</span>
+                                    )}
+                                </div>
+                                <button
+                                    className="reasoning-view-toggle"
+                                    onClick={() => setShowReasoning(!showReasoning)}
+                                >
+                                    {showReasoning ? 'Hide' : 'Show'} Reasoning
+                                </button>
+                            </div>
+                            {showReasoning && (
+                                <div className="card-body" style={{ padding: 0 }}>
+                                    <AgentReasoningPanel
+                                        reasoningTrace={reasoningTrace}
+                                        isRunning={isRunning}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
 
                 {/* Signals + Chart */}
                 <div className="dashboard-grid">

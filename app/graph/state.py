@@ -8,6 +8,18 @@ from typing import TypedDict, Annotated
 from operator import add
 
 
+class ReasoningStep(TypedDict, total=False):
+    """A single reasoning step from an agent — tool call, thought, or result."""
+    agent: str          # signal_scanner | case_investigator | safety_reporter
+    step_type: str      # thinking | tool_call | tool_result | conclusion
+    content: str        # The reasoning text or tool description
+    tool_name: str      # e.g. pharma.calculate_reporting_ratio
+    tool_input: dict    # e.g. {"drug_name": "Cardizol-X", "reaction_term": "Arrhythmia"}
+    tool_query: str     # The ES|QL query that was executed
+    tool_result: str    # Summarized result from the tool
+    timestamp: str      # ISO timestamp
+
+
 class SignalRecord(TypedDict):
     """A detected drug safety signal."""
     drug_name: str
@@ -66,6 +78,9 @@ class PharmaVigilState(TypedDict):
     current_agent: str
     progress_messages: Annotated[list[str], add]
     errors: Annotated[list[str], add]
+
+    # Agent reasoning transparency (append-only)
+    reasoning_trace: Annotated[list[dict], add]
 
     # Metadata
     total_signals_found: int
