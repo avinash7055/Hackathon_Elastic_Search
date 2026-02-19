@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 
 from app.graph.state import PharmaVigilState
 from app.graph.nodes import (
@@ -67,9 +67,9 @@ def build_graph() -> StateGraph:
 
 
 async def create_runnable():
-    """Create a compiled graph with SQLite checkpointing."""
+    """Create a compiled graph with in-memory checkpointing."""
     graph = build_graph()
-    checkpointer = AsyncSqliteSaver.from_conn_string("pharma_vigil_checkpoints.db")
+    checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
 
 

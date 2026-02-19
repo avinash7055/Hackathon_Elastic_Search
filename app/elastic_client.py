@@ -4,6 +4,7 @@ Wraps the Kibana Converse API to communicate with Agent Builder agents.
 Handles authentication, streaming responses, and response parsing.
 """
 
+import asyncio
 import logging
 import json
 from typing import Optional
@@ -59,29 +60,62 @@ class ElasticAgentClient:
         client = await self._get_client()
 
         payload = {
-            "agentId": agent_id,
-            "message": message,
+            "agent_id": agent_id,
+            "input": message,
         }
         if conversation_id:
-            payload["conversationId"] = conversation_id
+            payload["conversation_id"] = conversation_id
 
         logger.info(f"Sending to agent '{agent_id}': {message[:100]}...")
 
-        resp = await client.post(
-            "/api/agent_builder/converse",
-            json=payload,
-        )
+        # Retry up to 3 times on 429 rate limit errors
+        for attempt in range(3):
+            resp = await client.post(
+                "/api/agent_builder/converse",
+                json=payload,
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("retry-after", 20))
+                logger.warning(f"Rate limited (429). Waiting {retry_after}s before retry {attempt+1}/3...")
+                await asyncio.sleep(retry_after)
+                continue
+            break  # success or non-429 error
 
         if resp.status_code != 200:
             logger.error(f"Converse API error: {resp.status_code} {resp.text}")
             raise Exception(f"Agent Builder API error: {resp.status_code} — {resp.text}")
 
         data = resp.json()
+        
+        # LOG RAW RESPONSE FOR DEBUGGING
+        logger.info(f"RAW DATA FROM AGENT '{agent_id}': {json.dumps(data)[:5000]}")
+
+        # The response structure can vary.
+        response_text = data.get("message", "")
+        
+        # If message is empty, look through 'steps' for the final text or reasoning
+        if not response_text and "steps" in data and isinstance(data["steps"], list):
+            # Try to get the last text step or reasoning step
+            for step in reversed(data["steps"]):
+                if step.get("type") in ("text", "reasoning") and step.get("reasoning" if step.get("type") == "reasoning" else "text"):
+                    response_text = step.get("reasoning" if step.get("type") == "reasoning" else "text", "")
+                    if response_text:
+                        break
+
+        if not response_text and "output" in data:
+            response_text = data.get("output", "")
+            
+        # Extract tool calls from steps if not at top level
+        tool_calls = data.get("tool_calls", data.get("toolCalls", []))
+        if not tool_calls and "steps" in data and isinstance(data["steps"], list):
+            for step in data["steps"]:
+                if step.get("type") == "tool_call":
+                    tool_calls.append(step)
 
         result = {
-            "response": data.get("message", ""),
-            "conversation_id": data.get("conversationId", conversation_id),
-            "tool_calls": data.get("toolCalls", []),
+            "response": response_text,
+            "conversation_id": data.get("conversation_id", data.get("conversationId", conversation_id)),
+            "tool_calls": tool_calls,
             "agent_id": agent_id,
             "raw": data,
         }
@@ -106,12 +140,12 @@ class ElasticAgentClient:
         client = await self._get_client()
 
         payload = {
-            "agentId": agent_id,
-            "message": message,
+            "agent_id": agent_id,
+            "input": message,
             "stream": True,
         }
         if conversation_id:
-            payload["conversationId"] = conversation_id
+            payload["conversation_id"] = conversation_id
 
         logger.info(f"Streaming from agent '{agent_id}': {message[:100]}...")
 
@@ -142,7 +176,8 @@ class ElasticAgentClient:
         client = await self._get_client()
         resp = await client.get("/api/agent_builder/agents")
         if resp.status_code == 200:
-            return resp.json()
+            data = resp.json()
+            return data.get("results", []) if isinstance(data, dict) else data
         logger.error(f"Failed to list agents: {resp.status_code}")
         return []
 
@@ -151,7 +186,8 @@ class ElasticAgentClient:
         client = await self._get_client()
         resp = await client.get("/api/agent_builder/tools")
         if resp.status_code == 200:
-            return resp.json()
+            data = resp.json()
+            return data.get("results", []) if isinstance(data, dict) else data
         logger.error(f"Failed to list tools: {resp.status_code}")
         return []
 

@@ -151,15 +151,17 @@ def _extract_reasoning_from_response(agent_name: str, result: dict) -> list[dict
     return steps
 
 
-def _extract_signals_from_response(response_text: str) -> list[dict]:
+def _extract_signals_from_response(response_text: str, raw_result: dict = None) -> list[dict]:
     """Parse Signal Scanner agent response into structured signal records.
-    
+
     Looks for patterns like:
-    FLAGGED SIGNAL: DrugName → ReactionTerm
-    - PRR: X.X
-    - Recent cases: N
-    - Spike ratio: X.Xx
-    - Priority: HIGH/MEDIUM/LOW
+      FLAGGED SIGNAL: DrugName → ReactionTerm
+      - PRR: X.X
+      - Recent cases: N
+      - Spike ratio: X.Xx
+      - Priority: HIGH/MEDIUM/LOW
+
+    Falls back to mining the raw API steps for tool call evidence.
     """
     signals = []
     current_signal = None
@@ -167,26 +169,28 @@ def _extract_signals_from_response(response_text: str) -> list[dict]:
     for line in response_text.split("\n"):
         line = line.strip()
 
-        # Match signal header
-        if "FLAGGED SIGNAL" in line.upper() or ("→" in line and ("signal" in line.lower() or ":" in line)):
+        # Match signal header: "FLAGGED SIGNAL: Cardizol-X → Cardiac Arrest"
+        if "FLAGGED SIGNAL" in line.upper() or ("→" in line and ("signal" in line.lower() or "🔴" in line or "flag" in line.lower())):
             if current_signal and current_signal.get("drug_name"):
                 signals.append(current_signal)
 
-            # Parse "Drug → Reaction" pattern
             parts = line.split("→")
             if len(parts) >= 2:
-                drug = parts[0].replace("**", "").replace("FLAGGED SIGNAL:", "").replace("FLAGGED SIGNAL", "").strip()
-                drug = drug.lstrip("*#- ").strip()
-                reaction = parts[1].replace("**", "").strip()
-                current_signal = {
-                    "drug_name": drug,
-                    "reaction_term": reaction,
-                    "prr": 0.0,
-                    "case_count": 0,
-                    "spike_ratio": 0.0,
-                    "priority": "MEDIUM",
-                    "raw_response": "",
-                }
+                drug = parts[0].replace("**", "").replace("🔴", "").replace("FLAGGED SIGNAL:", "").replace("FLAGGED SIGNAL", "").strip()
+                drug = re.sub(r'^[*#\-:\s]+', '', drug).strip()
+                reaction = parts[1].replace("**", "").strip().split("\n")[0].strip()
+                # Clean trailing punctuation
+                reaction = re.sub(r'[*#\-:]+$', '', reaction).strip()
+                if drug:
+                    current_signal = {
+                        "drug_name": drug,
+                        "reaction_term": reaction,
+                        "prr": 0.0,
+                        "case_count": 0,
+                        "spike_ratio": 0.0,
+                        "priority": "HIGH",
+                        "raw_response": "",
+                    }
 
         # Parse PRR
         if current_signal and "prr" in line.lower():
@@ -196,25 +200,28 @@ def _extract_signals_from_response(response_text: str) -> list[dict]:
                     current_signal["prr"] = float(match.group())
                 except ValueError:
                     pass
+            # Handle "∞" PRR
+            if "∞" in line or "infinite" in line.lower() or "exclusive" in line.lower():
+                current_signal["prr"] = 999.0
 
         # Parse case count
         if current_signal and ("recent cases" in line.lower() or "case count" in line.lower() or "cases" in line.lower()):
-            match = re.search(r"(\d+)", line.split(":")[-1])
+            match = re.search(r"([\d,]+)", line.split(":")[-1])
             if match:
-                current_signal["case_count"] = int(match.group(1))
+                current_signal["case_count"] = int(match.group(1).replace(",", ""))
 
         # Parse spike ratio
         if current_signal and "spike" in line.lower():
-            match = re.search(r"([\d.]+)", line.split(":")[-1])
+            match = re.search(r"[\d.]+", line.split(":")[-1])
             if match:
                 try:
-                    current_signal["spike_ratio"] = float(match.group(1))
+                    current_signal["spike_ratio"] = float(match.group())
                 except ValueError:
                     pass
 
         # Parse priority
         if current_signal and "priority" in line.lower():
-            for level in ["HIGH", "MEDIUM", "LOW", "CRITICAL"]:
+            for level in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
                 if level in line.upper():
                     current_signal["priority"] = level
                     break
@@ -222,6 +229,74 @@ def _extract_signals_from_response(response_text: str) -> list[dict]:
     # Append last signal
     if current_signal and current_signal.get("drug_name"):
         signals.append(current_signal)
+
+    # ── Fallback: mine signals from raw API step data ──────────────────────
+    # If text parsing found nothing but the raw result has tool call evidence,
+    # reconstruct signals from the tool call parameters (drug_name + reaction).
+    if not signals and raw_result:
+        raw_steps = raw_result.get("raw", {}).get("steps", [])
+        spike_drugs = {}       # drug_name → spike_ratio
+        prr_signals = {}       # (drug, reaction) → prr
+
+        for step in raw_steps:
+            if step.get("type") != "tool_call":
+                continue
+            tool_id = step.get("tool_id", "")
+            params = step.get("params", {})
+            results_list = step.get("results", [])
+
+            # Collect spike ratios from detect_temporal_spike
+            if tool_id == "pharma.detect_temporal_spike":
+                drug = params.get("drug_name", "")
+                for res in results_list:
+                    if res.get("type") == "esql_results":
+                        vals = res.get("data", {}).get("values", [])
+                        cols = [c["name"] for c in res.get("data", {}).get("columns", [])]
+                        for row in vals:
+                            row_dict = dict(zip(cols, row))
+                            spike = row_dict.get("spike_ratio")
+                            if spike and spike > 2.0:
+                                spike_drugs[drug] = float(spike)
+
+            # Collect PRR evidence from calculate_reporting_ratio
+            if tool_id == "pharma.calculate_reporting_ratio":
+                drug = params.get("drug_name", "")
+                reaction = params.get("reaction_term", "")
+                for res in results_list:
+                    if res.get("type") == "esql_results":
+                        vals = res.get("data", {}).get("values", [])
+                        cols = [c["name"] for c in res.get("data", {}).get("columns", [])]
+                        for row in vals:
+                            row_dict = dict(zip(cols, row))
+                            prr = row_dict.get("prr")
+                            drug_total = row_dict.get("drug_total", 0)
+                            if prr and prr > 2.0 and drug_total > 0:
+                                prr_signals[(drug, reaction)] = float(prr)
+
+        # Build signals from evidence
+        for (drug, reaction), prr in prr_signals.items():
+            signals.append({
+                "drug_name": drug,
+                "reaction_term": reaction,
+                "prr": prr,
+                "case_count": 0,
+                "spike_ratio": spike_drugs.get(drug, 0.0),
+                "priority": "HIGH" if prr > 5.0 else "MEDIUM",
+                "raw_response": "",
+            })
+
+        # If we have spike drugs but no PRR matches, add spike-only signals
+        if not signals:
+            for drug, spike in spike_drugs.items():
+                signals.append({
+                    "drug_name": drug,
+                    "reaction_term": "Adverse Event",
+                    "prr": 0.0,
+                    "case_count": 0,
+                    "spike_ratio": spike,
+                    "priority": "HIGH" if spike > 3.0 else "MEDIUM",
+                    "raw_response": "",
+                })
 
     return signals
 
@@ -255,8 +330,8 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
         agent_reasoning = _extract_reasoning_from_response("signal_scanner", result)
         reasoning.extend(agent_reasoning)
 
-        # Parse structured signals from response
-        signals = _extract_signals_from_response(response_text)
+        # Parse structured signals from response — try text first, fallback to raw steps
+        signals = _extract_signals_from_response(response_text, raw_result=result)
 
         logger.info(f"Signal Scanner found {len(signals)} potential signals")
 
@@ -502,14 +577,17 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
             agent_reasoning = _extract_reasoning_from_response("safety_reporter", result)
             reasoning.extend(agent_reasoning)
 
-            # Determine risk level from response
-            risk_level = "MODERATE"
+            # Determine risk level — prefer signal priority, confirm from agent response text
+            signal_priority = matching_signal.get("priority", "MEDIUM").upper()
+            risk_level = signal_priority  # HIGH, MEDIUM, LOW, CRITICAL from signal data
+
+            # Allow agent response to upgrade risk level but not downgrade it
             resp_upper = result["response"].upper()
-            if "CRITICAL" in resp_upper:
+            if "CRITICAL" in resp_upper and risk_level not in ("CRITICAL",):
                 risk_level = "CRITICAL"
-            elif "HIGH" in resp_upper and "RISK" in resp_upper:
+            elif "HIGH RISK" in resp_upper and risk_level == "LOW":
                 risk_level = "HIGH"
-            elif "LOW" in resp_upper and "RISK" in resp_upper:
+            elif "LOW RISK" in resp_upper and risk_level in ("MEDIUM",):
                 risk_level = "LOW"
 
             report = {

@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     kibana_url: str = "http://localhost:5601"
     kibana_api_key: str = ""
 
-    # LLM (optional, for local summarization)
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
+    # LLM (Groq — hardware-accelerated inference)
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # App settings
     log_level: str = "INFO"

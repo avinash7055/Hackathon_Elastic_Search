@@ -22,7 +22,7 @@ CONFIG_DIR = Path(__file__).parent.parent / "agent_config"
 
 def load_json(filename: str) -> dict:
     path = CONFIG_DIR / filename
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -32,24 +32,33 @@ def register_tools(client: httpx.Client, tools: list[dict]):
         tool_id = tool["toolId"]
         logger.info(f"Registering tool: {tool_id}")
 
+        # Transform parameters list to the object format the API expects
+        params_obj = {}
+        for p in tool.get("parameters", []):
+            param_def = {
+                "type": p["type"],
+                "description": p.get("description", ""),
+                "optional": not p.get("required", True)
+            }
+            if "defaultValue" in p:
+                param_def["defaultValue"] = p["defaultValue"]
+            params_obj[p["name"]] = param_def
+
         payload = {
-            "toolId": tool_id,
-            "name": tool["name"],
+            "id": tool_id,
+            "type": "esql",
             "description": tool["description"],
-            "type": tool["type"],
+            "configuration": {
+                "query": tool["query"],
+                "params": params_obj
+            }
         }
 
-        if "parameters" in tool:
-            payload["parameters"] = tool["parameters"]
-        if "query" in tool:
-            payload["query"] = tool["query"]
-
-        # Try to create; if exists, update
+        # Delete first to ensure a clean update (idempotent setup)
+        client.delete(f"/api/agent_builder/tools/{tool_id}")
+        
+        # Create
         resp = client.post("/api/agent_builder/tools", json=payload)
-
-        if resp.status_code == 409:
-            logger.info(f"  Tool {tool_id} exists, updating...")
-            resp = client.put(f"/api/agent_builder/tools/{tool_id}", json=payload)
 
         if resp.status_code in (200, 201):
             logger.info(f"  ✓ Tool {tool_id} registered successfully")
@@ -64,22 +73,27 @@ def register_agents(client: httpx.Client, agents: list[dict]):
         logger.info(f"Registering agent: {agent_id}")
 
         payload = {
-            "agentId": agent_id,
-            "displayName": agent["displayName"],
-            "displayDescription": agent["displayDescription"],
-            "instructions": agent["instructions"],
-            "tools": agent["tools"],
+            "id": agent_id,
+            "name": agent["displayName"],
+            "description": agent["displayDescription"],
+            "avatar_color": agent.get("avatarColor", "#4ECDC4"),
+            "avatar_symbol": agent.get("avatarSymbol", "🤖"),
+            "configuration": {
+                "instructions": agent["instructions"],
+                "tools": [
+                    { "tool_ids": agent["tools"] }
+                ]
+            }
         }
 
         if "labels" in agent:
             payload["labels"] = agent["labels"]
 
-        # Try to create; if exists, update
-        resp = client.post("/api/agent_builder/agents", json=payload)
+        # Delete first to ensure a clean update
+        client.delete(f"/api/agent_builder/agents/{agent_id}")
 
-        if resp.status_code == 409:
-            logger.info(f"  Agent {agent_id} exists, updating...")
-            resp = client.put(f"/api/agent_builder/agents/{agent_id}", json=payload)
+        # Create
+        resp = client.post("/api/agent_builder/agents", json=payload)
 
         if resp.status_code in (200, 201):
             logger.info(f"  ✓ Agent {agent_id} registered successfully")
@@ -94,18 +108,46 @@ def verify_setup(client: httpx.Client):
     resp = client.get("/api/agent_builder/tools")
     if resp.status_code == 200:
         tools = resp.json()
-        pharma_tools = [t for t in tools if t.get("toolId", "").startswith("pharma.")]
-        logger.info(f"  Pharma tools registered: {len(pharma_tools)}/8")
+        logger.info(f"  Raw tools response type: {type(tools)}")
+        if isinstance(tools, list):
+            pharma_tools = []
+            for t in tools:
+                if isinstance(t, dict):
+                    tid = t.get("id", t.get("toolId", ""))
+                    if tid.startswith("pharma."):
+                        pharma_tools.append(t)
+                elif isinstance(t, str) and t.startswith("pharma."):
+                    pharma_tools.append(t)
+            logger.info(f"  Pharma tools registered: {len(pharma_tools)}/8")
+        elif isinstance(tools, dict) and "tools" in tools:
+            pharma_tools = [t for t in tools["tools"] if isinstance(t, dict) and t.get("id", "").startswith("pharma.")]
+            logger.info(f"  Pharma tools registered: {len(pharma_tools)}/8")
+        else:
+            logger.info(f"  Tools response: {str(tools)[:200]}")
     else:
-        logger.warning(f"  Could not list tools: {resp.status_code}")
+        logger.warning(f"  Could not list tools: {resp.status_code} {resp.text[:200]}")
 
     resp = client.get("/api/agent_builder/agents")
     if resp.status_code == 200:
         agents = resp.json()
-        our_agents = [a for a in agents if a.get("agentId") in ("signal_scanner", "case_investigator", "safety_reporter")]
-        logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/3")
+        logger.info(f"  Raw agents response type: {type(agents)}")
+        if isinstance(agents, list):
+            our_agents = []
+            for a in agents:
+                if isinstance(a, dict):
+                    aid = a.get("id", a.get("agentId", ""))
+                    if aid in ("signal_scanner", "case_investigator", "safety_reporter"):
+                        our_agents.append(a)
+                elif isinstance(a, str) and a in ("signal_scanner", "case_investigator", "safety_reporter"):
+                    our_agents.append(a)
+            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/3")
+        elif isinstance(agents, dict) and "agents" in agents:
+            our_agents = [a for a in agents["agents"] if isinstance(a, dict) and a.get("id", "") in ("signal_scanner", "case_investigator", "safety_reporter")]
+            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/3")
+        else:
+            logger.info(f"  Agents response: {str(agents)[:200]}")
     else:
-        logger.warning(f"  Could not list agents: {resp.status_code}")
+        logger.warning(f"  Could not list agents: {resp.status_code} {resp.text[:200]}")
 
 
 def main():
