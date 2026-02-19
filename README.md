@@ -1,64 +1,82 @@
 # PharmaVigil AI 💊🔍
 
-**Autonomous Drug Safety Signal Detection** — Multi-agent pharmacovigilance system that detects, investigates, and reports on emerging drug safety signals using FDA FAERS data.
+**Autonomous Drug Safety Signal Detection** — A multi-agent pharmacovigilance system that detects, investigates, and reports on emerging drug safety signals using FDA FAERS data in **under 30 seconds**.
 
-> Built for the [Elasticsearch Agent Builder Hackathon](https://www.elastic.co/campaigns/agent-builder-hackathon)
+> Built for the [Elasticsearch Agent Builder Hackathon 2026](https://www.elastic.co/campaigns/agent-builder-hackathon)
 
 ---
 
 ## 🎯 The Problem
 
-Pharmacovigilance — monitoring drugs for adverse effects after market approval — is a **$5 billion/year** industry that still relies on manual review. Dangerous signals can go undetected for **months to years**, putting patients at risk.
+Pharmacovigilance — monitoring drugs for adverse effects after market approval — is a **$5 billion/year** industry that still relies heavily on manual review. Dangerous signals can go undetected for **months to years**, putting patients at risk.
 
 - 800,000+ adverse event reports filed annually in the US alone
-- Manual review cycles take **2-6 weeks** per signal
-- Critical drug interactions are buried in millions of records
+- Manual review cycles take **2–6 weeks** per signal
+- Critical drug interactions buried in millions of records
 
 ## 💡 The Solution
 
-PharmaVigil AI deploys **3 specialized agents** that autonomously:
+PharmaVigil AI deploys **3 specialized Elastic Agent Builder agents** orchestrated by LangGraph to autonomously scan, investigate, and report on drug safety signals:
 
-1. **🔍 Signal Scanner** — Scans FAERS data for statistical anomalies (PRR, temporal spikes)
-2. **🔬 Case Investigator** — Deep-dives into demographics, drug interactions, severity, geography
-3. **📋 Safety Reporter** — Generates FDA MedWatch-style safety assessment reports
+| Agent | Role | Tools Used |
+|---|---|---|
+| 🔍 **Signal Scanner** | Scans FAERS data for statistical anomalies using PRR & temporal spike detection | `scan_adverse_event_trends`, `detect_temporal_spike`, `calculate_reporting_ratio` |
+| 🔬 **Case Investigator** | Deep-dives into demographics, co-medications, severity, geography | `analyze_patient_demographics`, `find_concomitant_drugs`, `check_outcome_severity`, `geo_distribution` |
+| 📋 **Safety Reporter** | Generates structured FDA MedWatch-style safety assessment reports | `compile_signal_summary`, `geo_distribution`, `check_outcome_severity` |
 
-**Result: 3 weeks → 30 seconds.** From raw adverse event data to actionable safety report.
+**Result: 3 weeks → 30 seconds.** From raw adverse event data to a prioritized, actionable safety report.
 
 ---
 
 ## 🏗 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Elastic Cloud Serverless                                │
-│  ┌──────────────────────────────────────────────┐       │
-│  │  Elasticsearch: 500K+ FAERS Records         │       │
-│  └──────────────────────────────────────────────┘       │
-│  ┌──────────────────────────────────────────────┐       │
-│  │  Agent Builder                                │       │
-│  │  • signal_scanner (3 ES|QL tools)            │       │
-│  │  • case_investigator (4 ES|QL tools)         │       │
-│  │  • safety_reporter (3 ES|QL tools)           │       │
-│  └──────────┬───────────────────────────────────┘       │
-│             │ Converse API                               │
-└─────────────┼───────────────────────────────────────────┘
-              │
-┌─────────────┼───────────────────────────────────────────┐
-│  External Application                                    │
-│  ┌──────────▼───────────────────────┐                   │
-│  │  LangGraph StateGraph            │                   │
-│  │  scan → investigate → report     │                   │
-│  │  (conditional routing)           │                   │
-│  └──────────┬───────────────────────┘                   │
-│  ┌──────────▼───────────────────────┐                   │
-│  │  FastAPI Backend                  │                   │
-│  │  REST + WebSocket                 │                   │
-│  └──────────┬───────────────────────┘                   │
-│  ┌──────────▼───────────────────────┐                   │
-│  │  React Dashboard                  │                   │
-│  │  Signal Timeline · Reports · KPIs │                   │
-│  └──────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Elastic Cloud Serverless                                         │
+│  ┌────────────────────────────────────────────┐                  │
+│  │  Elasticsearch: 500K+ Synthetic FAERS      │                  │
+│  │  Index: faers_reports                      │                  │
+│  └────────────────────────────────────────────┘                  │
+│  ┌────────────────────────────────────────────┐                  │
+│  │  Elastic Agent Builder (Kibana)            │                  │
+│  │  • signal_scanner    — 3 ES|QL tools       │                  │
+│  │  • case_investigator — 4 ES|QL tools       │                  │
+│  │  • safety_reporter   — 3 ES|QL tools       │                  │
+│  │  19 registered tools total                 │                  │
+│  └──────────────┬─────────────────────────────┘                  │
+│                 │ Converse API (HTTPS)                            │
+└─────────────────┼────────────────────────────────────────────────┘
+                  │
+┌─────────────────┼────────────────────────────────────────────────┐
+│  Python Backend (FastAPI + LangGraph)                             │
+│  ┌──────────────▼──────────────────────┐                         │
+│  │  LangGraph StateGraph               │                         │
+│  │  scan_signals → investigate_cases   │                         │
+│  │       → generate_reports            │                         │
+│  │       → compile_results             │                         │
+│  │  (conditional routing on signals)   │                         │
+│  └──────────────┬──────────────────────┘                         │
+│  ┌──────────────▼──────────────────────┐                         │
+│  │  FastAPI REST + WebSocket           │                         │
+│  │  POST /api/investigate              │                         │
+│  │  GET  /api/investigations/:id       │                         │
+│  │  WS   /ws/progress/:id  (real-time) │                         │
+│  └──────────────┬──────────────────────┘                         │
+└─────────────────┼────────────────────────────────────────────────┘
+                  │
+┌─────────────────┼────────────────────────────────────────────────┐
+│  React Frontend (Vite)                                            │
+│  ┌──────────────▼──────────────────────┐                         │
+│  │  Dashboard                          │                         │
+│  │  • Natural language query input     │                         │
+│  │  • 6 quick-query chips              │                         │
+│  │  • Live pipeline steps indicator    │                         │
+│  │  • 🧠 Agent Reasoning Trace panel   │                         │
+│  │  • Signal table (PRR, spike, badge) │                         │
+│  │  • Signal Strength bar chart        │                         │
+│  │  • Safety report viewer (Markdown)  │                         │
+│  └─────────────────────────────────────┘                         │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Technologies
@@ -67,11 +85,76 @@ PharmaVigil AI deploys **3 specialized agents** that autonomously:
 |---|---|
 | Agent Logic | Elastic Agent Builder (custom agents + ES|QL tools) |
 | Data Store | Elasticsearch Serverless |
-| Query Language | ES|QL (8 custom parameterized queries) |
-| Orchestration | LangGraph StateGraph |
-| Backend API | FastAPI + WebSocket |
-| Frontend | React 18 + Recharts |
+| Query Language | ES|QL (19 parameterized queries, `DATE_DIFF` based) |
+| Orchestration | LangGraph `StateGraph` with conditional routing |
+| LLM Backbone | Groq `llama-3.3-70b-versatile` (auto-retry on rate limits) |
+| Backend API | FastAPI + WebSocket (real-time progress streaming) |
+| Frontend | React 18 + Recharts + ReactMarkdown |
 | Data Source | Synthetic FDA FAERS data (500K+ records) |
+
+---
+
+## ✨ Features
+
+### 🔍 Autonomous Signal Detection
+- Scans all drugs in FAERS for adverse event volume anomalies
+- Computes **Proportional Reporting Ratio (PRR)** for disproportionate reactions
+- Detects **temporal spikes** by comparing 90-day recent rate vs 365-day baseline
+
+### 🧠 Agent Reasoning Transparency
+- Full step-by-step reasoning trace from all 3 agents displayed in real-time
+- See every **ES|QL query** the agents run, with results
+- Expandable tool call cards show `tool name → parameters → ES|QL → results`
+- Step count and tool call count displayed in the reasoning panel header
+
+### 💬 Natural Language Investigation Queries
+- Free-text input: ask anything (e.g., *"Are there cardiac signals for Cardizol-X?"*)
+- 6 **quick-query chips** for common investigation types:
+  - Full Safety Scan · Cardiac Signals · Hepatotoxicity · Drug Interactions · Pediatric Safety · Rhabdomyolysis
+
+### 📡 Real-Time Progress Streaming
+- WebSocket connection streams pipeline progress live
+- Pipeline step indicator shows Scanner → Investigator → Reporter status
+- Investigation log panel shows timestamped progress messages
+
+### 📋 Structured Safety Reports
+- Markdown reports rendered in-browser from the Safety Reporter agent
+- Risk level badge (`HIGH` / `MEDIUM` / `LOW` / `CRITICAL`) derived from signal priority
+- Tabbed viewer to switch between reports for multiple signals
+
+### 🔄 Robust Error Handling
+- Auto-retry with exponential backoff on Groq API 429 rate limit errors (max 3 retries, reads `retry-after` header)
+- Signal parser has two-layer fallback: text parsing → raw API step mining
+- ES|QL tools use `COALESCE` to handle optional parameters gracefully
+
+---
+
+## 📊 Confirmed Detected Signals
+
+The synthetic dataset embeds 3 drug safety signals. The pipeline **correctly identifies** these on every run:
+
+| Priority | Drug | Spike Ratio | Key Reactions | Pattern |
+|---|---|---|---|---|
+| 🔴 **HIGH** | **Cardizol-X** | **3.41×** | Cardiac arrest, Tachycardia, QT prolongation, Ventricular tachycardia | 18,323 events in 90d; 91% serious, 18% fatal |
+| 🟡 **MEDIUM** | **Neurofen-Plus** | **2.29×** | Hepatic failure, Jaundice, Liver injury, Transaminases increased | Predominantly elderly females (avg age 74.8) |
+| 🟢 **LOW** | **Arthrex-200** | ~1.2× | Rhabdomyolysis with statin co-prescription | Drug-drug interaction signal |
+
+---
+
+## 📃 ES|QL Tools (19 Total)
+
+| Tool ID | What It Does |
+|---|---|
+| `pharma.scan_adverse_event_trends` | Time-bucketed adverse event counts, serious/fatal breakdown per drug |
+| `pharma.calculate_reporting_ratio` | Proportional Reporting Ratio (PRR ≥ 2.0 = signal) |
+| `pharma.detect_temporal_spike` | Recent 90-day daily rate vs 365-day baseline spike ratio |
+| `pharma.analyze_patient_demographics` | Age group, sex, weight distribution per drug/reaction |
+| `pharma.find_concomitant_drugs` | Top 15 co-reported drugs with seriousness % |
+| `pharma.check_outcome_severity` | Fatal/hospitalization/disability/life-threatening counts |
+| `pharma.geo_distribution` | Country-level event counts and seriousness rates |
+| `pharma.compile_signal_summary` | Comprehensive reaction-level report profile |
+
+All queries use `DATE_DIFF("day", report_date, NOW())` for time filtering and `COALESCE` for optional parameter handling.
 
 ---
 
@@ -82,90 +165,125 @@ PharmaVigil AI deploys **3 specialized agents** that autonomously:
 - Python 3.11+
 - Node.js 18+
 - [Elastic Cloud Serverless trial](https://cloud.elastic.co/registration?cta=agentbuilderhackathon)
+- [Groq API key](https://console.groq.com/) (free tier)
 
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/yourusername/pharmavigil-ai.git
-cd pharmavigil-ai
+git clone https://github.com/avinash7055/Hackathon_Elastic_Search.git
+cd Hackathon_Elastic_Search
 
 # Python dependencies
 python -m venv venv
-venv\Scripts\activate  # Windows
+venv\Scripts\activate       # Windows
+# source venv/bin/activate  # Mac/Linux
 pip install -r requirements.txt
 
 # Frontend dependencies
 cd frontend && npm install && cd ..
 ```
 
-### 2. Configure
+### 2. Configure Environment
 
 ```bash
-copy .env.example .env
-# Edit .env with your Elastic Cloud credentials:
-# ELASTICSEARCH_URL, ELASTICSEARCH_API_KEY
-# KIBANA_URL, KIBANA_API_KEY
+copy .env.example .env   # Windows
+# cp .env.example .env   # Mac/Linux
 ```
 
-### 3. Generate FAERS Data
+Edit `.env`:
+
+```env
+ELASTICSEARCH_URL=https://<your-project>.es.<region>.elastic.cloud:443
+ELASTICSEARCH_API_KEY=<your-es-api-key>
+
+KIBANA_URL=https://<your-project>.kb.<region>.elastic.cloud:443
+KIBANA_API_KEY=<your-kibana-api-key>
+
+GROQ_API_KEY=<your-groq-api-key>
+GROQ_MODEL=llama-3.3-70b-versatile
+
+LOG_LEVEL=INFO
+FAERS_RECORD_COUNT=500000
+```
+
+### 3. Generate Synthetic FAERS Data
 
 ```bash
-python -m data.generate_faers_data --es-url %ELASTICSEARCH_URL% --api-key %ELASTICSEARCH_API_KEY% --count 500000
+python -m data.generate_faers_data \
+  --es-url $ELASTICSEARCH_URL \
+  --api-key $ELASTICSEARCH_API_KEY \
+  --count 500000
 ```
 
-### 4. Register Agents & Tools
+> This creates the `faers_reports` index with 500K records including embedded safety signals for Cardizol-X, Neurofen-Plus, and Arthrex-200.
+
+### 4. Register Agents & Tools in Kibana
 
 ```bash
-python -m setup.setup_agents --kibana-url %KIBANA_URL% --api-key %KIBANA_API_KEY%
+python -m setup.setup_agents \
+  --kibana-url $KIBANA_URL \
+  --api-key $KIBANA_API_KEY
 ```
+
+> **Re-run this any time you modify `agent_config/tools.json` or `agent_config/agents.json`.**
 
 ### 5. Run
 
 ```bash
-# Backend (terminal 1)
+# Terminal 1 — Backend
 uvicorn app.api:app --reload --port 8000
 
-# Frontend (terminal 2)
+# Terminal 2 — Frontend
 cd frontend && npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and click **Start Investigation**.
+Open **[http://localhost:5173](http://localhost:5173)** and click **🔍 Investigate** or select a quick-query chip.
 
 ---
 
-## 📊 What It Detects
+## 📁 Project Structure
 
-The synthetic dataset includes 3 embedded safety signals:
-
-| Signal | Drug | Reaction | Pattern |
-|---|---|---|---|
-| 1 | **Cardizol-X** | Cardiac arrhythmia | 4x spike in last 90 days |
-| 2 | **Neurofen-Plus** | Hepatotoxicity | Rising trend in 65+ females |
-| 3 | **Arthrex-200** | Rhabdomyolysis | Drug interaction with statins |
+```
+pharmavigil-ai/
+├── agent_config/
+│   ├── agents.json          # Agent definitions (system prompts, model config)
+│   └── tools.json           # 19 ES|QL tool definitions with parameterized queries
+├── app/
+│   ├── api.py               # FastAPI endpoints + WebSocket progress streaming
+│   ├── config.py            # Pydantic settings from .env
+│   ├── elastic_client.py    # Kibana Converse API client (with retry logic)
+│   └── graph/
+│       ├── graph.py         # LangGraph StateGraph definition + routing
+│       ├── nodes.py         # Agent node functions + signal parsing logic
+│       └── state.py         # PharmaVigilState TypedDict
+├── data/
+│   └── generate_faers_data.py   # Synthetic FAERS data generator
+├── frontend/
+│   └── src/
+│       ├── App.jsx           # Full React dashboard
+│       └── index.css         # Design system (dark theme, glassmorphism)
+├── setup/
+│   └── setup_agents.py      # Kibana agent/tool registration script
+├── test_groq.py             # Quick Groq API connectivity test
+├── requirements.txt
+└── .env.example
+```
 
 ---
 
-## 📃 Custom ES|QL Tools
+## 🏆 Hackathon Submission
 
-| Tool | What It Does |
-|---|---|
-| `pharma.scan_adverse_event_trends` | Time-bucketed event counts per drug |
-| `pharma.calculate_reporting_ratio` | PRR disproportionality score |
-| `pharma.detect_temporal_spike` | Recent vs baseline rate comparison |
-| `pharma.analyze_patient_demographics` | Age/sex/weight breakdown |
-| `pharma.find_concomitant_drugs` | Co-reported drug frequency |
-| `pharma.check_outcome_severity` | Death/hospitalization/disability counts |
-| `pharma.geo_distribution` | Country-level event distribution |
-| `pharma.compile_signal_summary` | Comprehensive signal profile |
+Built for the **Elasticsearch Agent Builder Hackathon 2026** demonstrating:
+
+- ✅ **Elastic Agent Builder** — 3 custom agents with 19 ES|QL tools
+- ✅ **Multi-agent orchestration** — LangGraph StateGraph with conditional routing
+- ✅ **Agent transparency** — Full reasoning trace visible in real-time UI
+- ✅ **Natural language interface** — Free-text + quick-query chip input
+- ✅ **Real-world use case** — Drug safety signal detection (pharmacovigilance)
+- ✅ **Production-quality** — Error handling, retry logic, WebSocket streaming
 
 ---
 
 ## 📜 License
 
 [MIT License](LICENSE)
-
----
-
-## 🏆 Hackathon
-
-Built for the [Elasticsearch Agent Builder Hackathon](https://www.elastic.co/campaigns/agent-builder-hackathon) — demonstrating how multi-agent AI can transform drug safety monitoring from weeks to seconds.
