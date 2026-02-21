@@ -26,6 +26,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false # Don't push to a registry, just prove it builds successfully
+          load: true  # Load image to the local Docker daemon so it can run
           tags: pharmavigil-app:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
