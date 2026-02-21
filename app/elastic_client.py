@@ -91,9 +91,19 @@ class ElasticAgentClient:
         logger.info(f"RAW DATA FROM AGENT '{agent_id}': {json.dumps(data)[:5000]}")
 
         # The response structure can vary.
-        response_text = data.get("message", "")
+        # Primary: data["response"]["message"] (standard Agent Builder format)
+        # Fallback: data["message"] (alternative format)
+        response_text = ""
         
-        # If message is empty, look through 'steps' for the final text or reasoning
+        # Check nested response.message first (standard format)
+        if isinstance(data.get("response"), dict):
+            response_text = data["response"].get("message", "")
+        
+        # Fallback to top-level message
+        if not response_text:
+            response_text = data.get("message", "")
+        
+        # If still empty, look through 'steps' for the final text or reasoning
         if not response_text and "steps" in data and isinstance(data["steps"], list):
             # Try to get the last text step or reasoning step
             for step in reversed(data["steps"]):

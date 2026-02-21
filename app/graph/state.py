@@ -60,9 +60,15 @@ class PharmaVigilState(TypedDict):
 
     # Investigation metadata
     investigation_id: str
-    status: str  # scanning | investigating | reporting | complete | error
+    status: str  # routing | scanning | investigating | reporting | complete | error
     started_at: str
     query: str  # Original user query / trigger
+
+    # Master Node routing
+    route: str            # full_scan | investigate | report | data_query | general
+    extracted_drug: str   # Drug name extracted from query (if any)
+    extracted_reaction: str  # Reaction term extracted (if any)
+    direct_response: str  # For general/data_query — direct answer string
 
     # Agent outputs (append-only lists)
     signals: Annotated[list[dict], add]

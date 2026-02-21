@@ -1,8 +1,12 @@
 """LangGraph StateGraph definition for PharmaVigil AI.
 
-Defines the investigation workflow:
-  START → Scan Signals → (if signals) → Investigate Cases → Generate Reports → Compile → END
-                       → (if none)   → END
+Defines the investigation workflow with intelligent routing via Master Node:
+  START → Master Node → (route classification)
+    → "full_scan"   → Scanner → Investigator → Reporter → Compile → END
+    → "investigate"  → Investigator → Reporter → Compile → END
+    → "report"       → Reporter → Compile → END
+    → "data_query"   → Direct Query → Compile → END
+    → "general"      → General Knowledge → Compile → END
 """
 
 import logging
@@ -14,13 +18,36 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.graph.state import PharmaVigilState
 from app.graph.nodes import (
+    master_node,
     scan_signals_node,
     investigate_cases_node,
     generate_reports_node,
     compile_results_node,
+    direct_query_node,
+    general_knowledge_node,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def route_after_master(state: PharmaVigilState) -> str:
+    """Conditional edge: Master Node routes to the appropriate pipeline."""
+    route = state.get("route", "full_scan")
+    logger.info(f"Master routing decision: {route}")
+
+    if route == "full_scan":
+        return "scan_signals"
+    elif route == "investigate":
+        return "investigate_cases"
+    elif route == "report":
+        return "generate_reports"
+    elif route == "data_query":
+        return "direct_query"
+    elif route == "general":
+        return "general_knowledge"
+    else:
+        logger.warning(f"Unknown route '{route}', defaulting to full scan")
+        return "scan_signals"
 
 
 def should_investigate(state: PharmaVigilState) -> str:
@@ -35,20 +62,36 @@ def should_investigate(state: PharmaVigilState) -> str:
 
 
 def build_graph() -> StateGraph:
-    """Build the PharmaVigil investigation StateGraph."""
+    """Build the PharmaVigil investigation StateGraph with Master Node routing."""
 
     graph = StateGraph(PharmaVigilState)
 
     # Add nodes
+    graph.add_node("master", master_node)
     graph.add_node("scan_signals", scan_signals_node)
     graph.add_node("investigate_cases", investigate_cases_node)
     graph.add_node("generate_reports", generate_reports_node)
     graph.add_node("compile_results", compile_results_node)
+    graph.add_node("direct_query", direct_query_node)
+    graph.add_node("general_knowledge", general_knowledge_node)
 
-    # Set entry point
-    graph.set_entry_point("scan_signals")
+    # ── Entry point: always start with Master Node ──
+    graph.set_entry_point("master")
 
-    # Conditional routing after signal scan
+    # ── Master Node → conditional routing ──
+    graph.add_conditional_edges(
+        "master",
+        route_after_master,
+        {
+            "scan_signals": "scan_signals",
+            "investigate_cases": "investigate_cases",
+            "generate_reports": "generate_reports",
+            "direct_query": "direct_query",
+            "general_knowledge": "general_knowledge",
+        },
+    )
+
+    # ── Full Scan pipeline: Scanner → (conditional) → Investigator → Reporter ──
     graph.add_conditional_edges(
         "scan_signals",
         should_investigate,
@@ -58,9 +101,15 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # Linear flow: investigate → report → compile
+    # ── Linear flow after investigation ──
     graph.add_edge("investigate_cases", "generate_reports")
     graph.add_edge("generate_reports", "compile_results")
+
+    # ── Quick paths → compile directly ──
+    graph.add_edge("direct_query", "compile_results")
+    graph.add_edge("general_knowledge", "compile_results")
+
+    # ── Terminal ──
     graph.add_edge("compile_results", END)
 
     return graph
@@ -91,16 +140,20 @@ async def run_investigation(
 
     initial_state: PharmaVigilState = {
         "investigation_id": investigation_id,
-        "status": "scanning",
+        "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query": query,
+        "route": "",
+        "extracted_drug": "",
+        "extracted_reaction": "",
+        "direct_response": "",
         "signals": [],
         "investigations": [],
         "reports": [],
         "scanner_conversation_id": "",
         "investigator_conversation_id": "",
         "reporter_conversation_id": "",
-        "current_agent": "signal_scanner",
+        "current_agent": "master_orchestrator",
         "progress_messages": [f"Investigation {investigation_id} started"],
         "errors": [],
         "reasoning_trace": [],
@@ -119,6 +172,7 @@ async def run_investigation(
 
     logger.info(
         f"Investigation {investigation_id} complete: "
+        f"route={final_state.get('route', 'N/A')}, "
         f"{final_state.get('total_signals_found', 0)} signals, "
         f"{final_state.get('total_investigations', 0)} investigations, "
         f"{final_state.get('total_reports', 0)} reports"
@@ -140,16 +194,20 @@ async def stream_investigation(
 
     initial_state: PharmaVigilState = {
         "investigation_id": investigation_id,
-        "status": "scanning",
+        "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query": query,
+        "route": "",
+        "extracted_drug": "",
+        "extracted_reaction": "",
+        "direct_response": "",
         "signals": [],
         "investigations": [],
         "reports": [],
         "scanner_conversation_id": "",
         "investigator_conversation_id": "",
         "reporter_conversation_id": "",
-        "current_agent": "signal_scanner",
+        "current_agent": "master_orchestrator",
         "progress_messages": [f"Investigation {investigation_id} started"],
         "errors": [],
         "reasoning_trace": [],

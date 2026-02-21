@@ -162,9 +162,11 @@ async def start_investigation(request: InvestigateRequest):
     # Store initial state
     investigations_store[investigation_id] = {
         "id": investigation_id,
-        "status": "scanning",
+        "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query": request.query,
+        "route": "",
+        "direct_response": "",
         "signals": [],
         "investigations": [],
         "reports": [],
@@ -177,8 +179,8 @@ async def start_investigation(request: InvestigateRequest):
 
     return InvestigateResponse(
         investigation_id=investigation_id,
-        status="scanning",
-        message="Investigation started. Connect to /ws/progress/{id} for real-time updates.",
+        status="routing",
+        message="Investigation started. Master Orchestrator is analyzing your query. Connect to /ws/progress/{id} for real-time updates.",
     )
 
 
@@ -200,6 +202,10 @@ async def _run_investigation_background(investigation_id: str, query: str):
                     inv.setdefault("reports", []).extend(state_update["reports"])
                 if "status" in state_update:
                     inv["status"] = state_update["status"]
+                if "route" in state_update:
+                    inv["route"] = state_update["route"]
+                if "direct_response" in state_update and state_update["direct_response"]:
+                    inv["direct_response"] = state_update["direct_response"]
                 if "progress_messages" in state_update:
                     inv.setdefault("progress", []).extend(state_update["progress_messages"])
 
@@ -214,6 +220,8 @@ async def _run_investigation_background(investigation_id: str, query: str):
                 await _broadcast_progress(investigation_id, {
                     "node": node_name,
                     "status": state_update.get("status", ""),
+                    "route": state_update.get("route", ""),
+                    "direct_response": state_update.get("direct_response", ""),
                     "progress": state_update.get("progress_messages", []),
                     "signals_count": len(inv.get("signals", [])),
                     "investigations_count": len(inv.get("investigations", [])),

@@ -72,18 +72,25 @@ def register_agents(client: httpx.Client, agents: list[dict]):
         agent_id = agent["agentId"]
         logger.info(f"Registering agent: {agent_id}")
 
+        configuration = {
+                "instructions": agent["instructions"],
+            }
+        
+        # Include tools — empty array for agents with no tools (API requires the field)
+        if agent.get("tools"):
+            configuration["tools"] = [
+                { "tool_ids": agent["tools"] }
+            ]
+        else:
+            configuration["tools"] = []
+
         payload = {
             "id": agent_id,
             "name": agent["displayName"],
             "description": agent["displayDescription"],
             "avatar_color": agent.get("avatarColor", "#4ECDC4"),
             "avatar_symbol": agent.get("avatarSymbol", "🤖"),
-            "configuration": {
-                "instructions": agent["instructions"],
-                "tools": [
-                    { "tool_ids": agent["tools"] }
-                ]
-            }
+            "configuration": configuration,
         }
 
         if "labels" in agent:
@@ -136,14 +143,14 @@ def verify_setup(client: httpx.Client):
             for a in agents:
                 if isinstance(a, dict):
                     aid = a.get("id", a.get("agentId", ""))
-                    if aid in ("signal_scanner", "case_investigator", "safety_reporter"):
+                    if aid in ("master_orchestrator", "signal_scanner", "case_investigator", "safety_reporter"):
                         our_agents.append(a)
-                elif isinstance(a, str) and a in ("signal_scanner", "case_investigator", "safety_reporter"):
+                elif isinstance(a, str) and a in ("master_orchestrator", "signal_scanner", "case_investigator", "safety_reporter"):
                     our_agents.append(a)
-            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/3")
+            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/4")
         elif isinstance(agents, dict) and "agents" in agents:
-            our_agents = [a for a in agents["agents"] if isinstance(a, dict) and a.get("id", "") in ("signal_scanner", "case_investigator", "safety_reporter")]
-            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/3")
+            our_agents = [a for a in agents["agents"] if isinstance(a, dict) and a.get("id", "") in ("master_orchestrator", "signal_scanner", "case_investigator", "safety_reporter")]
+            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/4")
         else:
             logger.info(f"  Agents response: {str(agents)[:200]}")
     else:

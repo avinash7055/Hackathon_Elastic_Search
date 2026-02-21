@@ -301,6 +301,315 @@ def _extract_signals_from_response(response_text: str, raw_result: dict = None) 
     return signals
 
 
+# ── Master Node (Intelligent Router) ──────────────────────
+
+async def master_node(state: PharmaVigilState) -> dict:
+    """Master Node: Classifies user intent and routes to the right agent pipeline.
+    
+    Uses the master_orchestrator Elastic Agent Builder agent for classification.
+    This ensures ALL intelligence flows through Elastic Agent Builder.
+    """
+    query = state.get("query", "")
+    logger.info(f"Master Node: Classifying query — '{query[:80]}...'")
+
+    reasoning = [{
+        "agent": "master_orchestrator",
+        "step_type": "thinking",
+        "content": f"Analyzing query to determine optimal investigation route: \"{query}\"",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    }]
+
+    try:
+        result = await elastic_agent_client.converse(
+            agent_id="master_orchestrator",
+            message=query,
+        )
+
+        response_text = result["response"].strip()
+        logger.info(f"Master Orchestrator raw response: {response_text[:500]}")
+
+        # Parse JSON classification from the agent
+        # Try to extract JSON even if the agent wraps it in markdown or extra text
+        classification = None
+        try:
+            classification = json.loads(response_text)
+        except json.JSONDecodeError:
+            # Try to find JSON object in the response
+            json_match = re.search(r'\{[^}]+\}', response_text)
+            if json_match:
+                try:
+                    classification = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+
+        if not classification:
+            # ── FALLBACK: Keyword-based intent classification ──
+            # The agent may have answered the question instead of classifying it.
+            # Use keyword heuristics on the ORIGINAL QUERY to determine route.
+            logger.warning("Master Node: JSON parse failed — using keyword fallback classifier")
+            q_lower = query.lower().strip()
+
+            # Known drug names in our database
+            known_drugs = ["cardizol-x", "neurofen-plus", "arthrex-200", "cardizol", "neurofen", "arthrex"]
+            found_drug = ""
+            for d in known_drugs:
+                if d in q_lower:
+                    # Capitalise properly
+                    drug_map = {
+                        "cardizol-x": "Cardizol-X", "cardizol": "Cardizol-X",
+                        "neurofen-plus": "Neurofen-Plus", "neurofen": "Neurofen-Plus",
+                        "arthrex-200": "Arthrex-200", "arthrex": "Arthrex-200",
+                    }
+                    found_drug = drug_map.get(d, d)
+                    break
+
+            # General knowledge patterns (no DB needed)
+            general_patterns = [
+                "what is", "what are", "explain", "define", "how does", "how do",
+                "tell me about prr", "tell me about ror", "tell me about faers",
+                "what does", "meaning of", "difference between",
+            ]
+            is_general = any(q_lower.startswith(p) or p in q_lower for p in general_patterns)
+            # But only if NO drug is mentioned and it's a conceptual question
+            if is_general and not found_drug:
+                classification = {"route": "general", "drug_name": "", "reaction_term": ""}
+            # Quick data questions
+            elif any(kw in q_lower for kw in ["how many", "top ", "count", "fatality rate", "geographic", "demographics"]):
+                classification = {"route": "data_query", "drug_name": found_drug, "reaction_term": ""}
+            # Report generation
+            elif any(kw in q_lower for kw in ["generate", "write", "create", "compile", "report"]):
+                classification = {"route": "report", "drug_name": found_drug, "reaction_term": ""}
+            # Drug-specific investigation
+            elif found_drug:
+                classification = {"route": "investigate", "drug_name": found_drug, "reaction_term": ""}
+            # Default to full scan
+            else:
+                classification = {"route": "full_scan", "drug_name": "", "reaction_term": ""}
+
+            # If the agent already answered the question (general route), capture it
+            if classification["route"] == "general":
+                # The agent already returned a useful answer in response_text
+                # We'll store it so general_knowledge_node can use it or we short-circuit
+                logger.info(f"Master Node: Agent already answered (fallback general). Capturing response.")
+            
+            logger.info(f"Master Node: Fallback classification → {classification}")
+
+        route = classification.get("route", "full_scan")
+        drug = classification.get("drug_name", "")
+        reaction = classification.get("reaction_term", "")
+
+        # Validate route
+        valid_routes = {"full_scan", "investigate", "report", "data_query", "general"}
+        if route not in valid_routes:
+            logger.warning(f"Master Node: Invalid route '{route}', defaulting to full_scan")
+            route = "full_scan"
+
+        # If investigate/report/data_query requires a drug but none extracted, fall back to full_scan
+        if route in ("investigate", "report") and not drug:
+            logger.info(f"Master Node: Route '{route}' requires a drug name but none found, falling back to full_scan")
+            route = "full_scan"
+
+        logger.info(f"Master Node: route={route}, drug={drug}, reaction={reaction}")
+
+        reasoning.append({
+            "agent": "master_orchestrator",
+            "step_type": "conclusion",
+            "content": f"Query classified → Route: **{route}**{f', Drug: {drug}' if drug else ''}{f', Reaction: {reaction}' if reaction else ''}. Dispatching to appropriate agent pipeline.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+
+        result_dict = {
+            "route": route,
+            "extracted_drug": drug,
+            "extracted_reaction": reaction,
+            "status": "routing",
+            "current_agent": "master_orchestrator",
+            "reasoning_trace": reasoning,
+            "progress_messages": [f"🧠 Master Orchestrator: Routed to '{route}'" + (f" for {drug}" if drug else "")],
+        }
+
+        # If the orchestrator already answered the question (fallback general),
+        # attach the response so general_knowledge_node can skip the redundant call
+        if route == "general" and response_text and not classification.get("_from_json"):
+            result_dict["direct_response"] = response_text
+            logger.info("Master Node: Short-circuiting — agent already answered the general question")
+
+        return result_dict
+
+    except Exception as e:
+        logger.error(f"Master Node failed: {e}")
+        reasoning.append({
+            "agent": "master_orchestrator",
+            "step_type": "conclusion",
+            "content": f"Classification failed ({str(e)}). Falling back to full safety scan.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+        return {
+            "route": "full_scan",
+            "extracted_drug": "",
+            "extracted_reaction": "",
+            "status": "routing",
+            "current_agent": "master_orchestrator",
+            "reasoning_trace": reasoning,
+            "progress_messages": ["🧠 Master Orchestrator: Defaulting to full safety scan"],
+        }
+
+
+async def direct_query_node(state: PharmaVigilState) -> dict:
+    """Handles quick data queries by routing to the most appropriate Elastic agent.
+    
+    For drug-specific questions → case_investigator agent
+    For broad data questions → signal_scanner agent
+    """
+    query = state.get("query", "")
+    drug = state.get("extracted_drug", "")
+    reaction = state.get("extracted_reaction", "")
+
+    logger.info(f"Direct Query Node: Answering data question — '{query[:80]}'")
+
+    reasoning = [{
+        "agent": "data_query",
+        "step_type": "thinking",
+        "content": f"Processing quick data query. {'Targeting drug: ' + drug if drug else 'No specific drug — broad data scan.'}",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    }]
+
+    # Choose the right agent based on whether a drug is specified
+    if drug:
+        agent_id = "case_investigator"
+        enhanced_query = (
+            f"Answer this specific data question about {drug}:\n{query}\n\n"
+            f"Use the appropriate tools to get the exact data requested. "
+            f"Be concise and data-focused in your response."
+        )
+    else:
+        agent_id = "signal_scanner"
+        enhanced_query = (
+            f"Answer this data question about the FAERS database:\n{query}\n\n"
+            f"Use the appropriate tools to get the exact data requested. "
+            f"Be concise and data-focused in your response."
+        )
+
+    try:
+        result = await elastic_agent_client.converse(
+            agent_id=agent_id,
+            message=enhanced_query,
+        )
+
+        # Extract reasoning from the agent's response
+        agent_reasoning = _extract_reasoning_from_response(agent_id, result)
+        reasoning.extend(agent_reasoning)
+
+        reasoning.append({
+            "agent": agent_id,
+            "step_type": "conclusion",
+            "content": f"Data query answered successfully by {TOOL_DESCRIPTIONS.get(agent_id, agent_id)}.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+
+        return {
+            "status": "complete",
+            "direct_response": result["response"],
+            "current_agent": "none",
+            "reasoning_trace": reasoning,
+            "progress_messages": [f"📊 Data query answered by {agent_id}"],
+        }
+
+    except Exception as e:
+        logger.error(f"Direct Query Node failed: {e}")
+        reasoning.append({
+            "agent": agent_id,
+            "step_type": "conclusion",
+            "content": f"Data query failed: {str(e)}",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+        return {
+            "status": "error",
+            "direct_response": f"Sorry, I couldn't retrieve that data: {str(e)}",
+            "errors": [f"Direct query error: {str(e)}"],
+            "reasoning_trace": reasoning,
+            "progress_messages": [f"Data query failed: {str(e)}"],
+        }
+
+
+async def general_knowledge_node(state: PharmaVigilState) -> dict:
+    """Answers general pharmacovigilance questions using the master_orchestrator agent.
+    
+    No database queries needed — pure LLM knowledge via Elastic Agent Builder.
+    If the master node already answered the question (fallback), we skip the redundant call.
+    """
+    query = state.get("query", "")
+    logger.info(f"General Knowledge Node: Answering question — '{query[:80]}'")
+
+    # If master node already answered (fallback short-circuit), just pass through
+    existing_response = state.get("direct_response", "")
+    if existing_response:
+        logger.info("General Knowledge Node: Master already answered — skipping redundant call")
+        return {
+            "status": "complete",
+            "current_agent": "none",
+            "reasoning_trace": [{
+                "agent": "master_orchestrator",
+                "step_type": "conclusion",
+                "content": "Question already answered by the Master Orchestrator during routing.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            }],
+            "progress_messages": ["💡 General knowledge question answered (via Master Orchestrator)"],
+        }
+
+    reasoning = [{
+        "agent": "master_orchestrator",
+        "step_type": "thinking",
+        "content": f"Answering general pharmacovigilance knowledge question directly (no database query needed).",
+        "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+        "timestamp": _now_iso(),
+    }]
+
+    try:
+        result = await elastic_agent_client.converse(
+            agent_id="master_orchestrator",
+            message=(
+                f"You are now acting as a pharmacovigilance knowledge expert. "
+                f"Answer this question clearly, accurately, and concisely. "
+                f"Use markdown formatting for readability.\n\n"
+                f"Question: {query}"
+            ),
+        )
+
+        reasoning.append({
+            "agent": "master_orchestrator",
+            "step_type": "conclusion",
+            "content": "General knowledge question answered successfully.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        })
+
+        return {
+            "status": "complete",
+            "direct_response": result["response"],
+            "current_agent": "none",
+            "reasoning_trace": reasoning,
+            "progress_messages": ["💡 General knowledge question answered"],
+        }
+
+    except Exception as e:
+        logger.error(f"General Knowledge Node failed: {e}")
+        return {
+            "status": "error",
+            "direct_response": f"Sorry, I couldn't answer that: {str(e)}",
+            "errors": [f"General knowledge error: {str(e)}"],
+            "reasoning_trace": reasoning,
+            "progress_messages": [f"General knowledge query failed: {str(e)}"],
+        }
+
+
 async def scan_signals_node(state: PharmaVigilState) -> dict:
     """Node 1: Call Signal Scanner agent to detect emerging safety signals."""
     logger.info("Node: scan_signals — Starting signal surveillance")
@@ -388,10 +697,30 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
 
 
 async def investigate_cases_node(state: PharmaVigilState) -> dict:
-    """Node 2: Call Case Investigator agent for each flagged signal."""
+    """Node 2: Call Case Investigator agent for each flagged signal.
+    
+    Also handles direct investigation requests from the Master Node
+    when a specific drug is mentioned but no scanner was run.
+    """
     logger.info("Node: investigate_cases — Investigating flagged signals")
 
     signals = state.get("signals", [])
+
+    # If no signals but master node extracted a drug, create a synthetic signal
+    if not signals and state.get("extracted_drug"):
+        drug = state.get("extracted_drug", "")
+        reaction = state.get("extracted_reaction", "")
+        logger.info(f"No scanner signals — creating direct investigation for {drug}")
+        signals = [{
+            "drug_name": drug,
+            "reaction_term": reaction or "All adverse events",
+            "prr": 0.0,
+            "case_count": 0,
+            "spike_ratio": 0.0,
+            "priority": "UNKNOWN",
+            "raw_response": "Direct investigation request via Master Orchestrator",
+        }]
+
     if not signals:
         return {
             "status": "complete",
@@ -642,21 +971,30 @@ async def compile_results_node(state: PharmaVigilState) -> dict:
     """Final node: Compile all results into the investigation summary."""
     logger.info("Node: compile_results — Finalizing investigation")
 
+    route = state.get("route", "full_scan")
     signals = state.get("signals", [])
     investigations = state.get("investigations", [])
     reports = state.get("reports", [])
+    direct_response = state.get("direct_response", "")
 
-    summary = (
-        f"Investigation complete. "
-        f"Signals detected: {len(signals)}, "
-        f"Cases investigated: {len(investigations)}, "
-        f"Reports generated: {len(reports)}."
-    )
-
-    # Log high-priority signals
-    high_priority = [s for s in signals if s.get("priority") in ("HIGH", "CRITICAL")]
-    if high_priority:
-        summary += f" HIGH PRIORITY signals: {len(high_priority)}."
+    # Route-appropriate summary
+    if route == "general":
+        summary = "✅ Knowledge question answered successfully."
+    elif route == "data_query":
+        summary = "✅ Data query completed successfully."
+    elif route in ("full_scan", "investigate", "report"):
+        summary = (
+            f"Investigation complete. "
+            f"Signals detected: {len(signals)}, "
+            f"Cases investigated: {len(investigations)}, "
+            f"Reports generated: {len(reports)}."
+        )
+        # Log high-priority signals
+        high_priority = [s for s in signals if s.get("priority") in ("HIGH", "CRITICAL")]
+        if high_priority:
+            summary += f" ⚠ HIGH PRIORITY signals: {len(high_priority)}."
+    else:
+        summary = "Investigation complete."
 
     logger.info(summary)
 
