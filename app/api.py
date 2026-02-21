@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
 
@@ -134,6 +135,14 @@ frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fronte
 
 if os.path.exists(frontend_dist):
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    
+    # Catch-all to support React Router SPA
+    @app.exception_handler(404)
+    async def react_router_catch_all(request, exc):
+        index_path = os.path.join(frontend_dist, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"detail": "Not Found"}
 else:
     # Fallback if frontend is not built
     @app.get("/")
