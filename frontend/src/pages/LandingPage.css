@@ -18,6 +18,9 @@
     border-radius: 0;
     border: none;
     border-bottom: 1px solid var(--glass-border);
+    background: rgba(9, 9, 11, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     animation: fadeInDown 0.5s ease;
 }
 
@@ -90,11 +93,27 @@
 /* ── Hero Section ────────────────────────────────────────────────── */
 
 .hero-section {
+    position: relative;
+    z-index: 1;
     min-height: 100vh;
     padding-top: 120px;
     padding-bottom: var(--space-4xl);
     display: flex;
     align-items: center;
+}
+
+.hero-section::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url('/hero-bg.png');
+    background-size: cover;
+    background-position: center top;
+    opacity: 0.45;
+    z-index: -1;
+    pointer-events: none;
+    mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
 }
 
 .hero-section>.container {

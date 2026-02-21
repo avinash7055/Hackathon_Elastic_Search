@@ -55,6 +55,18 @@ TOOL_QUERIES = {
         "FROM faers_reports | WHERE drug_name == ?drug_name "
         "| STATS total_reports, serious_count, fatal_count, last_90d, avg_patient_age BY reaction_term"
     ),
+    "pharma.search_knowledge": (
+        "FROM pharma_knowledge | WHERE content LIKE ?search_query OR title LIKE ?search_query "
+        "| KEEP doc_id, title, category, drug_name, content | LIMIT 3"
+    ),
+    "pharma.search_drug_label": (
+        "FROM pharma_knowledge | WHERE drug_name == ?drug_name AND category == 'drug_label' "
+        "| KEEP doc_id, title, content | LIMIT 1"
+    ),
+    "pharma.search_regulatory_guidance": (
+        "FROM pharma_knowledge | WHERE category IN ('methodology','regulatory') AND content LIKE ?topic "
+        "| KEEP doc_id, title, category, content | LIMIT 3"
+    ),
 }
 
 TOOL_DESCRIPTIONS = {
@@ -66,6 +78,9 @@ TOOL_DESCRIPTIONS = {
     "pharma.check_outcome_severity": "Check Outcome Severity",
     "pharma.geo_distribution": "Geographic Distribution",
     "pharma.compile_signal_summary": "Compile Signal Summary",
+    "pharma.search_knowledge": "Search Pharma Knowledge Base (RAG)",
+    "pharma.search_drug_label": "Search Drug Label Information (RAG)",
+    "pharma.search_regulatory_guidance": "Search Regulatory Guidance (RAG)",
 }
 
 
@@ -321,9 +336,26 @@ async def master_node(state: PharmaVigilState) -> dict:
     }]
 
     try:
+        classification_prompt = (
+            "CLASSIFY the following user query into one of these routes and extract entities.\n\n"
+            "## Routes:\n"
+            "- \"full_scan\" → Broad safety scan across ALL drugs (e.g. \"scan for signals\", \"any emerging safety issues\")\n"
+            "- \"investigate\" → Deep-dive into a SPECIFIC drug's adverse event data from FAERS (e.g. \"Investigate Cardizol-X\", \"Is Neurofen-Plus causing liver problems?\")\n"
+            "- \"report\" → Generate a formal safety assessment report (e.g. \"Generate safety report for Arthrex-200\")\n"
+            "- \"data_query\" → Quick factual/statistical question about FAERS data (e.g. \"How many events?\", \"Top 5 drugs by fatality\")\n"
+            "- \"general\" → Knowledge question about drug labels, pharmacovigilance methods, guidelines, contraindications, warnings, dosage, drug interactions, or any question that does NOT need FAERS database queries (e.g. \"What is PRR?\", \"What are the contraindications of Cardizol-X?\", \"How is EBGM calculated?\", \"Warnings for Neurofen-Plus in elderly?\")\n"
+            "- \"out_of_scope\" → Question completely unrelated to drugs, pharmacovigilance, or medicine (e.g. \"What is the weather?\", \"Tell me a joke\", \"Who won the world cup?\")\n\n"
+            "## Rules:\n"
+            "- If the query asks about drug LABELS, warnings, contraindications, dosage, mechanism, or prescribing information → route = \"general\" (even if a drug name is mentioned)\n"
+            "- If the query asks about actual FAERS adverse event DATA, demographics, case counts, or needs database analysis → route = \"investigate\" or \"data_query\"\n"
+            "- Respond with ONLY a JSON object. No markdown, no explanation, no extra text.\n\n"
+            f"## User Query:\n\"{query}\"\n\n"
+            "## Response (JSON only):\n"
+        )
+
         result = await elastic_agent_client.converse(
             agent_id="master_orchestrator",
-            message=query,
+            message=classification_prompt,
         )
 
         response_text = result["response"].strip()
@@ -371,9 +403,33 @@ async def master_node(state: PharmaVigilState) -> dict:
                 "what does", "meaning of", "difference between",
             ]
             is_general = any(q_lower.startswith(p) or p in q_lower for p in general_patterns)
+
+            # Pharma-related keywords to detect domain relevance
+            pharma_keywords = [
+                "drug", "adverse", "event", "safety", "signal", "pharmacovigilance",
+                "prr", "ror", "faers", "fda", "reaction", "side effect", "clinical",
+                "patient", "dose", "dosage", "prescription", "medication", "hepato",
+                "cardiac", "rhabdomyolysis", "report", "scan", "investigate", "label",
+                "contraindication", "warning", "interaction", "toxicity", "mortality",
+                "meddra", "icsr", "psur", "ich", "rems", "ebgm", "bcpnn",
+                "statin", "opioid", "nsaid", "arrhythmia", "hepatitis",
+                "serious", "fatal", "hospitalization", "surveillance",
+            ]
+            has_pharma_context = any(kw in q_lower for kw in pharma_keywords)
+
             # But only if NO drug is mentioned and it's a conceptual question
             if is_general and not found_drug:
                 classification = {"route": "general", "drug_name": "", "reaction_term": ""}
+            # Drug-label knowledge question (drug name + label-related keywords → RAG)
+            elif found_drug and any(kw in q_lower for kw in [
+                "contraindication", "warning", "precaution", "interaction",
+                "dosage", "dose", "maximum dose", "mechanism", "half-life",
+                "prescribing", "label", "indication", "black box",
+                "elderly", "pregnancy", "pediatric", "renal", "hepatic impairment",
+                "adverse reaction", "side effect", "clinical pharmacology",
+            ]):
+                classification = {"route": "general", "drug_name": found_drug, "reaction_term": ""}
+                logger.info(f"Master Node: Drug-label knowledge question detected → routing to RAG")
             # Quick data questions
             elif any(kw in q_lower for kw in ["how many", "top ", "count", "fatality rate", "geographic", "demographics"]):
                 classification = {"route": "data_query", "drug_name": found_drug, "reaction_term": ""}
@@ -383,6 +439,10 @@ async def master_node(state: PharmaVigilState) -> dict:
             # Drug-specific investigation
             elif found_drug:
                 classification = {"route": "investigate", "drug_name": found_drug, "reaction_term": ""}
+            # Out-of-scope: no drug found AND no pharma keywords detected
+            elif not has_pharma_context and not found_drug:
+                classification = {"route": "out_of_scope", "drug_name": "", "reaction_term": ""}
+                logger.info(f"Master Node: Query appears out of scope — '{query[:60]}'")
             # Default to full scan
             else:
                 classification = {"route": "full_scan", "drug_name": "", "reaction_term": ""}
@@ -400,7 +460,7 @@ async def master_node(state: PharmaVigilState) -> dict:
         reaction = classification.get("reaction_term", "")
 
         # Validate route
-        valid_routes = {"full_scan", "investigate", "report", "data_query", "general"}
+        valid_routes = {"full_scan", "investigate", "report", "data_query", "general", "out_of_scope"}
         if route not in valid_routes:
             logger.warning(f"Master Node: Invalid route '{route}', defaulting to full_scan")
             route = "full_scan"
@@ -430,11 +490,8 @@ async def master_node(state: PharmaVigilState) -> dict:
             "progress_messages": [f"🧠 Master Orchestrator: Routed to '{route}'" + (f" for {drug}" if drug else "")],
         }
 
-        # If the orchestrator already answered the question (fallback general),
-        # attach the response so general_knowledge_node can skip the redundant call
-        if route == "general" and response_text and not classification.get("_from_json"):
-            result_dict["direct_response"] = response_text
-            logger.info("Master Node: Short-circuiting — agent already answered the general question")
+        # NOTE: We no longer short-circuit general questions here.
+        # The general_knowledge_node will perform RAG search for grounded answers.
 
         return result_dict
 
@@ -538,6 +595,47 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         }
 
 
+async def out_of_scope_node(state: PharmaVigilState) -> dict:
+    """Handles queries that are outside the pharmacovigilance domain.
+    
+    Returns a polite redirect message guiding the user back to drug safety topics.
+    """
+    query = state.get("query", "")
+    logger.info(f"Out of Scope Node: Redirecting off-topic query — '{query[:80]}'")
+
+    redirect_message = (
+        "## 🔒 Out of Scope\n\n"
+        "I appreciate your question, but I'm **PharmaVigil AI** — a specialized system "
+        "designed exclusively for **drug safety and pharmacovigilance**.\n\n"
+        "I can help you with:\n\n"
+        "- 🔍 **Signal Detection** — Scan for emerging drug safety signals\n"
+        "- 💊 **Drug Investigation** — Investigate specific drugs for adverse events\n"
+        "- 📊 **Data Queries** — Get adverse event counts, demographics, geographic distribution\n"
+        "- 📝 **Safety Reports** — Generate regulatory-grade safety assessment reports\n"
+        "- 📚 **Pharma Knowledge** — Learn about PRR, ROR, FAERS, ICH guidelines, drug labels\n\n"
+        "### Try one of these:\n"
+        "- *\"Scan for any emerging drug safety signals in the last 90 days\"*\n"
+        "- *\"Investigate Cardizol-X for cardiac safety signals\"*\n"
+        "- *\"What is PRR in pharmacovigilance?\"*\n"
+        "- *\"What are the contraindications of Neurofen-Plus?\"*\n"
+        "- *\"Generate safety report for Arthrex-200\"*"
+    )
+
+    return {
+        "status": "complete",
+        "direct_response": redirect_message,
+        "current_agent": "none",
+        "reasoning_trace": [{
+            "agent": "master_orchestrator",
+            "step_type": "conclusion",
+            "content": f"Query \"{query[:60]}\" is outside the pharmacovigilance domain. Providing guidance on supported topics.",
+            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+            "timestamp": _now_iso(),
+        }],
+        "progress_messages": ["🔒 Query is outside the pharmacovigilance domain"],
+    }
+
+
 async def general_knowledge_node(state: PharmaVigilState) -> dict:
     """Answers general pharmacovigilance questions using the master_orchestrator agent.
     
@@ -547,38 +645,99 @@ async def general_knowledge_node(state: PharmaVigilState) -> dict:
     query = state.get("query", "")
     logger.info(f"General Knowledge Node: Answering question — '{query[:80]}'")
 
-    # If master node already answered (fallback short-circuit), just pass through
-    existing_response = state.get("direct_response", "")
-    if existing_response:
-        logger.info("General Knowledge Node: Master already answered — skipping redundant call")
-        return {
-            "status": "complete",
-            "current_agent": "none",
-            "reasoning_trace": [{
-                "agent": "master_orchestrator",
-                "step_type": "conclusion",
-                "content": "Question already answered by the Master Orchestrator during routing.",
-                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-                "timestamp": _now_iso(),
-            }],
-            "progress_messages": ["💡 General knowledge question answered (via Master Orchestrator)"],
-        }
+    # Always perform RAG search — never skip to ensure answers are grounded in knowledge base
 
     reasoning = [{
         "agent": "master_orchestrator",
         "step_type": "thinking",
-        "content": f"Answering general pharmacovigilance knowledge question directly (no database query needed).",
+        "content": f"Searching knowledge base for relevant documents before answering...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     }]
 
+    # ── RAG: Search knowledge base for context ──────────
+    rag_context = ""
     try:
+        from app.config import settings
+        from elasticsearch import Elasticsearch
+
+        es = Elasticsearch(settings.elasticsearch_url, api_key=settings.elasticsearch_api_key, request_timeout=15)
+        
+        # Try semantic search first (ELSER embeddings), fallback to BM25
+        hits = []
+        try:
+            semantic_body = {
+                "query": {
+                    "semantic": {
+                        "field": "content_semantic",
+                        "query": query,
+                    }
+                },
+                "size": 3,
+                "_source": ["title", "category", "content"],
+            }
+            results = es.search(index="pharma_knowledge", body=semantic_body)
+            hits = results.get("hits", {}).get("hits", [])
+            if hits:
+                logger.info(f"RAG semantic search returned {len(hits)} hits")
+        except Exception:
+            logger.info("Semantic search not available, falling back to BM25")
+        
+        # Fallback to BM25 full-text search
+        if not hits:
+            bm25_body = {
+                "query": {
+                    "multi_match": {
+                        "query": query,
+                        "fields": ["title^3", "content"],
+                        "type": "best_fields",
+                        "fuzziness": "AUTO",
+                    }
+                },
+                "size": 3,
+                "_source": ["title", "category", "content"],
+            }
+            results = es.search(index="pharma_knowledge", body=bm25_body, ignore=[404])
+            hits = results.get("hits", {}).get("hits", [])
+
+        if hits:
+            rag_pieces = []
+            for hit in hits:
+                src = hit["_source"]
+                rag_pieces.append(f"--- {src['title']} ({src['category']}) ---\n{src['content'][:2000]}")
+            rag_context = "\n\n".join(rag_pieces)
+            reasoning.append({
+                "agent": "master_orchestrator",
+                "step_type": "tool_call",
+                "content": f"Retrieved {len(hits)} relevant knowledge documents via RAG semantic search.",
+                "tool_name": "pharma.search_knowledge",
+                "tool_input": {"search_query": query[:100]},
+                "tool_query": f"Semantic search: '{query[:80]}' → {len(hits)} results",
+                "tool_result": ", ".join(h["_source"]["title"] for h in hits),
+                "timestamp": _now_iso(),
+            })
+        else:
+            logger.info("RAG search returned no results, using LLM knowledge only.")
+    except Exception as rag_err:
+        logger.warning(f"RAG search failed (non-critical): {rag_err}")
+
+    try:
+        rag_prefix = ""
+        if rag_context:
+            rag_prefix = (
+                f"Here is relevant context from our pharmaceutical knowledge base:\n\n"
+                f"{rag_context}\n\n"
+                f"Use the above context to inform and ground your answer. "
+                f"Cite specific documents when applicable.\n\n"
+            )
+
         result = await elastic_agent_client.converse(
             agent_id="master_orchestrator",
             message=(
                 f"You are now acting as a pharmacovigilance knowledge expert. "
                 f"Answer this question clearly, accurately, and concisely. "
                 f"Use markdown formatting for readability.\n\n"
+                f"{rag_prefix}"
                 f"Question: {query}"
             ),
         )

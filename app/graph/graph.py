@@ -25,6 +25,7 @@ from app.graph.nodes import (
     compile_results_node,
     direct_query_node,
     general_knowledge_node,
+    out_of_scope_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ def route_after_master(state: PharmaVigilState) -> str:
         return "direct_query"
     elif route == "general":
         return "general_knowledge"
+    elif route == "out_of_scope":
+        return "out_of_scope"
     else:
         logger.warning(f"Unknown route '{route}', defaulting to full scan")
         return "scan_signals"
@@ -74,6 +77,7 @@ def build_graph() -> StateGraph:
     graph.add_node("compile_results", compile_results_node)
     graph.add_node("direct_query", direct_query_node)
     graph.add_node("general_knowledge", general_knowledge_node)
+    graph.add_node("out_of_scope", out_of_scope_node)
 
     # ── Entry point: always start with Master Node ──
     graph.set_entry_point("master")
@@ -88,6 +92,7 @@ def build_graph() -> StateGraph:
             "generate_reports": "generate_reports",
             "direct_query": "direct_query",
             "general_knowledge": "general_knowledge",
+            "out_of_scope": "out_of_scope",
         },
     )
 
@@ -108,6 +113,7 @@ def build_graph() -> StateGraph:
     # ── Quick paths → compile directly ──
     graph.add_edge("direct_query", "compile_results")
     graph.add_edge("general_knowledge", "compile_results")
+    graph.add_edge("out_of_scope", "compile_results")
 
     # ── Terminal ──
     graph.add_edge("compile_results", END)

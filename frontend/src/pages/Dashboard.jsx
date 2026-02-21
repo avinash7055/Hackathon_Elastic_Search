@@ -15,6 +15,10 @@ import {
     FiCpu,
     FiZap,
 } from 'react-icons/fi';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 import './Dashboard.css';
 
 const API_BASE = 'http://localhost:8000';
@@ -27,6 +31,18 @@ const QUERY_SUGGESTIONS = [
     'Generate safety report for Arthrex-200',
     'Show top drugs by adverse event count',
 ];
+
+const STATUS_MESSAGES = [
+    { icon: '🔍', text: 'Analyzing query...' },
+    { icon: '🧠', text: 'Routing to specialized agent...' },
+    { icon: '📡', text: 'Scanning Elasticsearch database...' },
+    { icon: '⚡', text: 'Processing adverse event records...' },
+    { icon: '📊', text: 'Computing statistical signals...' },
+    { icon: '🔬', text: 'Investigating case patterns...' },
+    { icon: '📝', text: 'Generating safety assessment...' },
+    { icon: '✨', text: 'Compiling final report...' },
+];
+
 
 export default function Dashboard() {
     const { user, logout } = useAuth();
@@ -44,8 +60,18 @@ export default function Dashboard() {
     const [showSuggestions, setShowSuggestions] = useState(false);
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [selectedReport, setSelectedReport] = useState(null);
+    const [displayedSteps, setDisplayedSteps] = useState([]);
+    const [statusMessage, setStatusMessage] = useState(STATUS_MESSAGES[0]);
+    const [streamedResponse, setStreamedResponse] = useState('');
+    const [isStreaming, setIsStreaming] = useState(false);
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
+    const stepQueueRef = useRef([]);
+    const revealTimerRef = useRef(null);
+    const fullResponseRef = useRef('');
+    const streamTimerRef = useRef(null);
+    const userScrolledRef = useRef(false);
+    const scrollContainerRef = useRef(null);
 
     // Fetch health on mount
     useEffect(() => {
@@ -55,10 +81,94 @@ export default function Dashboard() {
             .catch(() => setHealth({ status: 'offline' }));
     }, []);
 
-    // Auto-scroll messages
+    // Track if user scrolled up manually
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [wsMessages, reasoningSteps]);
+        const handleScroll = () => {
+            const el = document.documentElement;
+            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            // If user is more than 150px from bottom, they scrolled up manually
+            userScrolledRef.current = distanceFromBottom > 150;
+        };
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        return () => window.removeEventListener('scroll', handleScroll);
+    }, []);
+
+    // Smart auto-scroll: only scroll down if user hasn't scrolled up
+    useEffect(() => {
+        if (!userScrolledRef.current) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [wsMessages, displayedSteps]);
+
+    // Stream response word-by-word when directResponse arrives
+    useEffect(() => {
+        if (!directResponse || directResponse === fullResponseRef.current) return;
+
+        // New response arrived — start streaming
+        fullResponseRef.current = directResponse;
+        setStreamedResponse('');
+        setIsStreaming(true);
+
+        // Clear any previous stream timer
+        if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+
+        const words = directResponse.split(/( )/); // split keeping spaces
+        let index = 0;
+
+        streamTimerRef.current = setInterval(() => {
+            // Reveal multiple chars at once for speed (chunk of ~3 words)
+            const chunk = words.slice(index, index + 3).join('');
+            index += 3;
+            setStreamedResponse(prev => prev + chunk);
+
+            if (index >= words.length) {
+                clearInterval(streamTimerRef.current);
+                streamTimerRef.current = null;
+                setStreamedResponse(directResponse); // ensure full text
+                setIsStreaming(false);
+            }
+        }, 20);
+
+        return () => {
+            if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+        };
+    }, [directResponse]);
+
+    // Drip-feed reasoning steps one-by-one
+    useEffect(() => {
+        if (reasoningSteps.length > displayedSteps.length) {
+            const newSteps = reasoningSteps.slice(displayedSteps.length);
+            stepQueueRef.current.push(...newSteps);
+
+            if (!revealTimerRef.current) {
+                const revealNext = () => {
+                    if (stepQueueRef.current.length === 0) {
+                        revealTimerRef.current = null;
+                        return;
+                    }
+                    const next = stepQueueRef.current.shift();
+                    setDisplayedSteps(prev => [...prev, next]);
+                    revealTimerRef.current = setTimeout(revealNext, 400);
+                };
+                revealTimerRef.current = setTimeout(revealNext, 400);
+            }
+        }
+    }, [reasoningSteps, displayedSteps.length]);
+
+    // Cycle status messages while active
+    useEffect(() => {
+        if (!isActiveStatus(status)) return;
+        let idx = 0;
+        const interval = setInterval(() => {
+            idx = (idx + 1) % STATUS_MESSAGES.length;
+            setStatusMessage(STATUS_MESSAGES[idx]);
+        }, 3000);
+        return () => clearInterval(interval);
+    }, [status]);
+
+    function isActiveStatus(s) {
+        return s !== 'idle' && s !== 'complete' && s !== 'error';
+    }
 
     const connectWebSocket = useCallback((investigationId) => {
         if (wsRef.current) wsRef.current.close();
@@ -114,12 +224,21 @@ export default function Dashboard() {
         setStatus('starting');
         setWsMessages([]);
         setReasoningSteps([]);
+        setDisplayedSteps([]);
+        stepQueueRef.current = [];
+        if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
         setSignals([]);
         setReports([]);
         setDirectResponse('');
+        setStreamedResponse('');
+        setIsStreaming(false);
+        fullResponseRef.current = '';
+        if (streamTimerRef.current) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; }
         setRoute('');
         setSelectedReport(null);
         setShowSuggestions(false);
+        setStatusMessage(STATUS_MESSAGES[0]);
+        userScrolledRef.current = false;
 
         try {
             const res = await fetch(`${API_BASE}/api/investigate`, {
@@ -140,6 +259,33 @@ export default function Dashboard() {
     const handleLogout = () => {
         logout();
         navigate('/');
+    };
+
+    const handleDownloadPdf = async (report, index) => {
+        const element = document.getElementById(`report-pdf-content-${index}`);
+        if (!element) return;
+
+        try {
+            // Temporarily applying light theme or strict styling for PDF if needed
+            // But we can stick to dark theme with high res scale
+            const canvas = await html2canvas(element, {
+                scale: 2,
+                useCORS: true,
+                backgroundColor: '#09090b', // match dark theme
+                windowWidth: 800
+            });
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+            // If the content is longer than one page, jsPDF handles basic image stretching/scaling,
+            // For a perfect multi-page, it's more complex, but for this hackathon, scrolling it into one scaled page or a long page is fine.
+            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+            pdf.save(`${report.drug_name}_Safety_Report.pdf`);
+        } catch (error) {
+            console.error("Error generating PDF", error);
+        }
     };
 
     const getStatusColor = () => {
@@ -178,7 +324,7 @@ export default function Dashboard() {
         }
     };
 
-    const isActive = status !== 'idle' && status !== 'complete' && status !== 'error';
+    const isActive = isActiveStatus(status);
 
     return (
         <div className="dashboard">
@@ -238,6 +384,11 @@ export default function Dashboard() {
 
             {/* ── Main Content ────────── */}
             <main className="dash-main">
+                {/* Close suggestions on outside click */}
+                {showSuggestions && (
+                    <div className="suggestions-overlay" onClick={() => setShowSuggestions(false)} />
+                )}
+
                 {/* Query Input */}
                 <section className="query-section anim-fade-in-down">
                     <div className="query-bar glass-card-static">
@@ -249,11 +400,14 @@ export default function Dashboard() {
                             value={query}
                             onChange={e => setQuery(e.target.value)}
                             onFocus={() => setShowSuggestions(true)}
-                            onKeyDown={e => e.key === 'Enter' && handleInvestigate()}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') { setShowSuggestions(false); handleInvestigate(); }
+                                if (e.key === 'Escape') setShowSuggestions(false);
+                            }}
                         />
                         <button
                             className="btn btn-primary btn-sm"
-                            onClick={handleInvestigate}
+                            onClick={() => { setShowSuggestions(false); handleInvestigate(); }}
                             disabled={!query.trim() || isActive}
                         >
                             {isActive ? <span className="spinner spinner-sm" /> : <><FiSend /> Investigate</>}
@@ -276,11 +430,6 @@ export default function Dashboard() {
                     )}
                 </section>
 
-                {/* Close suggestions on outside click */}
-                {showSuggestions && (
-                    <div className="suggestions-overlay" onClick={() => setShowSuggestions(false)} />
-                )}
-
                 {/* Dashboard Grid */}
                 {status !== 'idle' && (
                     <div className="dash-grid anim-fade-in-up">
@@ -298,17 +447,36 @@ export default function Dashboard() {
                                         <div className="flex items-center gap-md">
                                             <span className="font-mono text-xs text-accent">{investigation.investigation_id}</span>
                                             <span className={`badge ${status === 'complete' ? 'badge-low' : status === 'error' ? 'badge-critical' : 'badge-info'}`}>
-                                                {status}
+                                                {status === 'complete' ? '✓ Complete' : status === 'error' ? '✗ Error' : '⟳ Processing'}
                                             </span>
                                         </div>
-                                        {route && <span className="text-xs text-muted">Route: {route}</span>}
+                                        {route && (
+                                            <span className={`route-badge route-${route}`}>
+                                                {{
+                                                    full_scan: '🔍 Full Scan',
+                                                    investigate: '🔬 Investigation',
+                                                    report: '📝 Report',
+                                                    data_query: '📊 Data Query',
+                                                    general: '📚 Knowledge',
+                                                    out_of_scope: '🔒 Out of Scope',
+                                                }[route] || route}
+                                            </span>
+                                        )}
                                     </div>
                                 )}
 
-                                {/* Reasoning steps */}
+
+                                {/* Reasoning steps — revealed one by one */}
                                 <div className="reasoning-list">
-                                    {reasoningSteps.map((step, i) => (
-                                        <div key={i} className="reasoning-step anim-fade-in" style={{ borderLeftColor: getAgentColor(step.agent) }}>
+                                    {displayedSteps.map((step, i) => (
+                                        <div
+                                            key={i}
+                                            className="reasoning-step step-reveal"
+                                            style={{
+                                                borderLeftColor: getAgentColor(step.agent),
+                                                animationDelay: '0ms',
+                                            }}
+                                        >
                                             <div className="step-header">
                                                 <span className="step-icon">{getStepIcon(step)}</span>
                                                 <span className="step-agent" style={{ color: getAgentColor(step.agent) }}>
@@ -318,7 +486,11 @@ export default function Dashboard() {
                                                     {step.step_type}
                                                 </span>
                                             </div>
-                                            <div className="step-content">{step.content}</div>
+                                            <div className="step-content">
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                    {step.content}
+                                                </ReactMarkdown>
+                                            </div>
                                             {step.tool_name && (
                                                 <div className="step-tool font-mono text-xs">
                                                     🛠️ {step.tool_name}
@@ -332,16 +504,28 @@ export default function Dashboard() {
                                             )}
                                         </div>
                                     ))}
+
+                                    {/* Typing indicator while agent is still working */}
+                                    {isActive && (
+                                        <div className="thinking-indicator glass-card-static anim-fade-in">
+                                            <span className="typing-dots lg">
+                                                <span /><span /><span />
+                                            </span>
+                                            <span className="text-xs text-muted">Agent is thinking...</span>
+                                        </div>
+                                    )}
                                     <div ref={messagesEndRef} />
                                 </div>
 
                                 {/* Direct Response */}
-                                {directResponse && (
+                                {(streamedResponse || directResponse) && (
                                     <div className="direct-response glass-card-static anim-fade-in-up">
-                                        <h4 className="heading-sm" style={{ marginBottom: 'var(--space-sm)' }}>
-                                            💡 Response
-                                        </h4>
-                                        <div className="response-body">{directResponse}</div>
+                                        <div className="response-body">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                {streamedResponse || directResponse}
+                                            </ReactMarkdown>
+                                            {isStreaming && <span className="stream-cursor">|</span>}
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -435,8 +619,24 @@ export default function Dashboard() {
                                                     </div>
                                                     <div className="text-sm text-secondary">{rpt.reaction_term}</div>
                                                     {selectedReport === i && rpt.report_markdown && (
-                                                        <div className="report-content anim-fade-in">
-                                                            <pre className="report-markdown">{rpt.report_markdown}</pre>
+                                                        <div className="report-content anim-fade-in" onClick={e => e.stopPropagation()}>
+                                                            <div className="report-actions flex justify-between items-center" style={{ marginBottom: '1rem' }}>
+                                                                <span className="badge badge-info text-xs">Formatted Markdown</span>
+                                                                <button
+                                                                    className="btn btn-sm btn-secondary"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleDownloadPdf(rpt, i);
+                                                                    }}
+                                                                >
+                                                                    Download PDF
+                                                                </button>
+                                                            </div>
+                                                            <div id={`report-pdf-content-${i}`} className="report-markdown-formatted">
+                                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                                    {rpt.report_markdown}
+                                                                </ReactMarkdown>
+                                                            </div>
                                                         </div>
                                                     )}
                                                 </button>

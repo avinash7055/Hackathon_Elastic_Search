@@ -1,171 +1,119 @@
 # PharmaVigil AI 💊🔍
 
-**Autonomous Drug Safety Signal Detection** — A multi-agent pharmacovigilance system that detects, investigates, and reports on emerging drug safety signals using FDA FAERS data in **under 30 seconds**.
+**Autonomous Drug Safety & Pharmacovigilance System** — A multi-agent AI system that detects safety signals, investigates adverse events, generates regulatory reports, and answers complex drug-label questions using FDA FAERS data and RAG in **under 30 seconds**.
 
-> Built for the [Elasticsearch Agent Builder Hackathon 2026](https://www.elastic.co/campaigns/agent-builder-hackathon)
+> Built for the [Elasticsearch Agent Builder Hackathon](https://www.elastic.co/campaigns/agent-builder-hackathon)
 
 ---
 
 ## 🎯 The Problem
 
-Pharmacovigilance — monitoring drugs for adverse effects after market approval — is a **$5 billion/year** industry that still relies heavily on manual review. Dangerous signals can go undetected for **months to years**, putting patients at risk.
+Pharmacovigilance — monitoring drugs for adverse effects after market approval — is a **$5 billion/year** industry relying heavily on manual review. Dangerous signals can go undetected for **months to years**, putting patients at risk. 
 
-- 800,000+ adverse event reports filed annually in the US alone
-- Manual review cycles take **2–6 weeks** per signal
-- Critical drug interactions buried in millions of records
+- **Data overload:** 800,000+ adverse event reports filed annually.
+- **Slow processes:** Manual review cycles take **2–6 weeks** per signal.
+- **Siloed knowledge:** Guidelines, methodologies (PRR, EBGM), and drug labels are scattered across complex PDFs and databases.
 
 ## 💡 The Solution
 
-PharmaVigil AI deploys **3 specialized Elastic Agent Builder agents** orchestrated by LangGraph to autonomously scan, investigate, and report on drug safety signals:
+PharmaVigil AI deploys **5 specialized AI Agents** orchestrated by LangGraph, powered by Elastic Agent Builder and ELSER Semantic Search:
 
-| Agent | Role | Tools Used |
+| Agent | Role | Capabilities |
 |---|---|---|
-| 🔍 **Signal Scanner** | Scans FAERS data for statistical anomalies using PRR & temporal spike detection | `scan_adverse_event_trends`, `detect_temporal_spike`, `calculate_reporting_ratio` |
-| 🔬 **Case Investigator** | Deep-dives into demographics, co-medications, severity, geography | `analyze_patient_demographics`, `find_concomitant_drugs`, `check_outcome_severity`, `geo_distribution` |
-| 📋 **Safety Reporter** | Generates structured FDA MedWatch-style safety assessment reports | `compile_signal_summary`, `geo_distribution`, `check_outcome_severity` |
+| 🧠 **Master Orchestrator** | Intelligent Router | Understands intent, extracts entities, and routes to the correct specialized pipeline (6 distinct routes). |
+| 📚 **Knowledge Expert (RAG)** | Pharmacovigilance Guru | Uses ELSER semantic search to answer questions about drug labels, contraindications, and ICH guidelines. |
+| 🔍 **Signal Scanner** | Data Anomaly Hunter | Scans FAERS data for statistical anomalies using PRR & temporal spike detection. |
+| 🔬 **Case Investigator** | Deep-Dive Analyst | Investigates demographics, co-medications, severity, and geography for specific drugs. |
+| 📋 **Safety Reporter** | Regulatory Writer | Generates structured, FDA MedWatch-style safety assessment reports in Markdown. |
 
-**Result: 3 weeks → 30 seconds.** From raw adverse event data to a prioritized, actionable safety report.
+**Result: 3 weeks → 30 seconds.** From raw data and complex documents to a prioritized, actionable safety report or grounded answer.
+
+---
+
+## ✨ Key Features
+
+### 🧠 Intelligent Request Routing
+The Master Orchestrator classifies every natural language query into 6 distinct routes:
+1. `full_scan`: Broad safety sweeps across all drugs.
+2. `investigate`: Deep-dives into a specific drug's adverse events.
+3. `data_query`: Quick statistical/factual counts.
+4. `report`: Formal safety report generation.
+5. `general`: Knowledge questions routed to the RAG pipeline.
+6. `out_of_scope`: Graceful handling of non-pharma queries.
+
+### 📚 RAG Knowledge Base (ELSER Semantic Search)
+Ask complex questions about drug prescribing information and methodology:
+- *"What are the contraindications of Cardizol-X?"*
+- *"What drug interactions does Arthrex-200 have with statins?"*
+- *"How is Proportional Reporting Ratio (PRR) calculated?"*
+Answers are grounded in an Elasticsearch vector database using ELSER, eliminating LLM hallucinations and citing specific percentages and guidelines.
+
+### 💬 Premium Streaming User Interface
+- **ChatGPT-like Streaming**: Word-by-word response streaming for a fluid, natural conversational experience.
+- **Agent Reasoning Transparency**: Full step-by-step reasoning trace visible in real-time. See every ES|QL query the agents run.
+- **Smart Scrolling**: Auto-scrolls gracefully, pausing if the user scrolls up to read past reasoning steps.
+- **Glassmorphism Design**: High-end futuristic aesthetic with micro-animations.
+
+### 📊 Autonomous ES|QL Signal Detection
+- Scans all drugs in synthetic FAERS for adverse event volume anomalies.
+- Computes **Proportional Reporting Ratio (PRR)** for disproportionate reactions.
+- Detects **temporal spikes** by comparing 90-day recent rates vs 365-day baselines.
+
+### 🧪 Comprehensive Scenario Testing Suite
+A robust automated test script (`tests/test_scenarios.py`) validates the entire application:
+- API Health & Connectivity
+- Master Orchestrator Routing Accuracy
+- RAG Knowledge Retrieval Accuracy
+- Full Investigation & Report Generation Pipelines
+- WebSocket Real-time Progress Streaming
 
 ---
 
 ## 🏗 Architecture
 
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│  Elastic Cloud Serverless                                       │
+│  ┌────────────────────────┐  ┌───────────────────────────────┐  │
+│  │ FDA FAERS Data (ES|QL) │  │ Knowledge Base (Vector/ELSER) │  │
+│  │ Index: faers_reports   │  │ Index: pharma_knowledge       │  │
+│  └────────────────────────┘  └───────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Elastic Agent Builder (Kibana)                           │  │
+│  │  • master_orchestrator   • safety_reporter                │  │
+│  │  • signal_scanner        • case_investigator              │  │
+│  │  (19 Custom ES|QL / Search Tools Registered)              │  │
+│  └────────────────────────────┬──────────────────────────────┘  │
+└───────────────────────────────┼─────────────────────────────────┘
+                                │ HTTPS Converse API
+┌───────────────────────────────┼─────────────────────────────────┐
+│  Python Backend (FastAPI + LangGraph)                           │
+│  ┌────────────────────────────▼──────────────────────────────┐  │
+│  │  LangGraph StateGraph Orchestration                       │  │
+│  │  master_node ── routing ──┬──> general_knowledge_node     │  │
+│  │                           ├──> scan_signals_node          │  │
+│  │                           └──> out_of_scope_node          │  │
+│  └────────────────────────────┬──────────────────────────────┘  │
+│  ┌────────────────────────────▼──────────────────────────────┐  │
+│  │  FastAPI REST + WebSocket Progress Streaming              │  │
+│  └────────────────────────────┬──────────────────────────────┘  │
+└───────────────────────────────┼─────────────────────────────────┘
+                                │ HTTP / WS
+┌───────────────────────────────▼─────────────────────────────────┐
+│  React Frontend (Vite)                                          │
+│  • Natural Language Input   • Real-Time Streaming Responses     │
+│  • Agent Reasoning Trace    • Dark-Mode Glassmorphism UI        │
+└─────────────────────────────────────────────────────────────────┘
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Elastic Cloud Serverless                                         │
-│  ┌────────────────────────────────────────────┐                  │
-│  │  Elasticsearch: 500K+ Synthetic FAERS      │                  │
-│  │  Index: faers_reports                      │                  │
-│  └────────────────────────────────────────────┘                  │
-│  ┌────────────────────────────────────────────┐                  │
-│  │  Elastic Agent Builder (Kibana)            │                  │
-│  │  • signal_scanner    — 3 ES|QL tools       │                  │
-│  │  • case_investigator — 4 ES|QL tools       │                  │
-│  │  • safety_reporter   — 3 ES|QL tools       │                  │
-│  │  19 registered tools total                 │                  │
-│  └──────────────┬─────────────────────────────┘                  │
-│                 │ Converse API (HTTPS)                            │
-└─────────────────┼────────────────────────────────────────────────┘
-                  │
-┌─────────────────┼────────────────────────────────────────────────┐
-│  Python Backend (FastAPI + LangGraph)                             │
-│  ┌──────────────▼──────────────────────┐                         │
-│  │  LangGraph StateGraph               │                         │
-│  │  scan_signals → investigate_cases   │                         │
-│  │       → generate_reports            │                         │
-│  │       → compile_results             │                         │
-│  │  (conditional routing on signals)   │                         │
-│  └──────────────┬──────────────────────┘                         │
-│  ┌──────────────▼──────────────────────┐                         │
-│  │  FastAPI REST + WebSocket           │                         │
-│  │  POST /api/investigate              │                         │
-│  │  GET  /api/investigations/:id       │                         │
-│  │  WS   /ws/progress/:id  (real-time) │                         │
-│  └──────────────┬──────────────────────┘                         │
-└─────────────────┼────────────────────────────────────────────────┘
-                  │
-┌─────────────────┼────────────────────────────────────────────────┐
-│  React Frontend (Vite)                                            │
-│  ┌──────────────▼──────────────────────┐                         │
-│  │  Dashboard                          │                         │
-│  │  • Natural language query input     │                         │
-│  │  • 6 quick-query chips              │                         │
-│  │  • Live pipeline steps indicator    │                         │
-│  │  • 🧠 Agent Reasoning Trace panel   │                         │
-│  │  • Signal table (PRR, spike, badge) │                         │
-│  │  • Signal Strength bar chart        │                         │
-│  │  • Safety report viewer (Markdown)  │                         │
-│  └─────────────────────────────────────┘                         │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Key Technologies
-
-| Component | Technology |
-|---|---|
-| Agent Logic | Elastic Agent Builder (custom agents + ES|QL tools) |
-| Data Store | Elasticsearch Serverless |
-| Query Language | ES|QL (19 parameterized queries, `DATE_DIFF` based) |
-| Orchestration | LangGraph `StateGraph` with conditional routing |
-| LLM Backbone | Groq `llama-3.3-70b-versatile` (auto-retry on rate limits) |
-| Backend API | FastAPI + WebSocket (real-time progress streaming) |
-| Frontend | React 18 + Recharts + ReactMarkdown |
-| Data Source | Synthetic FDA FAERS data (500K+ records) |
-
----
-
-## ✨ Features
-
-### 🔍 Autonomous Signal Detection
-- Scans all drugs in FAERS for adverse event volume anomalies
-- Computes **Proportional Reporting Ratio (PRR)** for disproportionate reactions
-- Detects **temporal spikes** by comparing 90-day recent rate vs 365-day baseline
-
-### 🧠 Agent Reasoning Transparency
-- Full step-by-step reasoning trace from all 3 agents displayed in real-time
-- See every **ES|QL query** the agents run, with results
-- Expandable tool call cards show `tool name → parameters → ES|QL → results`
-- Step count and tool call count displayed in the reasoning panel header
-
-### 💬 Natural Language Investigation Queries
-- Free-text input: ask anything (e.g., *"Are there cardiac signals for Cardizol-X?"*)
-- 6 **quick-query chips** for common investigation types:
-  - Full Safety Scan · Cardiac Signals · Hepatotoxicity · Drug Interactions · Pediatric Safety · Rhabdomyolysis
-
-### 📡 Real-Time Progress Streaming
-- WebSocket connection streams pipeline progress live
-- Pipeline step indicator shows Scanner → Investigator → Reporter status
-- Investigation log panel shows timestamped progress messages
-
-### 📋 Structured Safety Reports
-- Markdown reports rendered in-browser from the Safety Reporter agent
-- Risk level badge (`HIGH` / `MEDIUM` / `LOW` / `CRITICAL`) derived from signal priority
-- Tabbed viewer to switch between reports for multiple signals
-
-### 🔄 Robust Error Handling
-- Auto-retry with exponential backoff on Groq API 429 rate limit errors (max 3 retries, reads `retry-after` header)
-- Signal parser has two-layer fallback: text parsing → raw API step mining
-- ES|QL tools use `COALESCE` to handle optional parameters gracefully
-
----
-
-## 📊 Confirmed Detected Signals
-
-The synthetic dataset embeds 3 drug safety signals. The pipeline **correctly identifies** these on every run:
-
-| Priority | Drug | Spike Ratio | Key Reactions | Pattern |
-|---|---|---|---|---|
-| 🔴 **HIGH** | **Cardizol-X** | **3.41×** | Cardiac arrest, Tachycardia, QT prolongation, Ventricular tachycardia | 18,323 events in 90d; 91% serious, 18% fatal |
-| 🟡 **MEDIUM** | **Neurofen-Plus** | **2.29×** | Hepatic failure, Jaundice, Liver injury, Transaminases increased | Predominantly elderly females (avg age 74.8) |
-| 🟢 **LOW** | **Arthrex-200** | ~1.2× | Rhabdomyolysis with statin co-prescription | Drug-drug interaction signal |
-
----
-
-## 📃 ES|QL Tools (19 Total)
-
-| Tool ID | What It Does |
-|---|---|
-| `pharma.scan_adverse_event_trends` | Time-bucketed adverse event counts, serious/fatal breakdown per drug |
-| `pharma.calculate_reporting_ratio` | Proportional Reporting Ratio (PRR ≥ 2.0 = signal) |
-| `pharma.detect_temporal_spike` | Recent 90-day daily rate vs 365-day baseline spike ratio |
-| `pharma.analyze_patient_demographics` | Age group, sex, weight distribution per drug/reaction |
-| `pharma.find_concomitant_drugs` | Top 15 co-reported drugs with seriousness % |
-| `pharma.check_outcome_severity` | Fatal/hospitalization/disability/life-threatening counts |
-| `pharma.geo_distribution` | Country-level event counts and seriousness rates |
-| `pharma.compile_signal_summary` | Comprehensive reaction-level report profile |
-
-All queries use `DATE_DIFF("day", report_date, NOW())` for time filtering and `COALESCE` for optional parameter handling.
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-
 - Python 3.11+
 - Node.js 18+
 - [Elastic Cloud Serverless trial](https://cloud.elastic.co/registration?cta=agentbuilderhackathon)
-- [Groq API key](https://console.groq.com/) (free tier)
 
 ### 1. Clone & Install
 
@@ -180,17 +128,14 @@ venv\Scripts\activate       # Windows
 pip install -r requirements.txt
 
 # Frontend dependencies
-cd frontend && npm install && cd ..
+cd frontend
+npm install
+cd ..
 ```
 
 ### 2. Configure Environment
 
-```bash
-copy .env.example .env   # Windows
-# cp .env.example .env   # Mac/Linux
-```
-
-Edit `.env`:
+Copy `.env.example` to `.env` and fill in your Elastic Cloud credentials:
 
 ```env
 ELASTICSEARCH_URL=https://<your-project>.es.<region>.elastic.cloud:443
@@ -199,91 +144,83 @@ ELASTICSEARCH_API_KEY=<your-es-api-key>
 KIBANA_URL=https://<your-project>.kb.<region>.elastic.cloud:443
 KIBANA_API_KEY=<your-kibana-api-key>
 
-GROQ_API_KEY=<your-groq-api-key>
-GROQ_MODEL=llama-3.3-70b-versatile
-
 LOG_LEVEL=INFO
-FAERS_RECORD_COUNT=500000
 ```
 
-### 3. Generate Synthetic FAERS Data
+### 3. Generate Data & Knowledge Base
 
+Generate the 500k synthetic FAERS reports (contains hidden safety signals):
 ```bash
-python -m data.generate_faers_data \
-  --es-url $ELASTICSEARCH_URL \
-  --api-key $ELASTICSEARCH_API_KEY \
-  --count 500000
+python -m data.generate_faers_data --es-url $ELASTICSEARCH_URL --api-key $ELASTICSEARCH_API_KEY --count 500000
 ```
 
-> This creates the `faers_reports` index with 500K records including embedded safety signals for Cardizol-X, Neurofen-Plus, and Arthrex-200.
-
-### 4. Register Agents & Tools in Kibana
-
+Generate the RAG Semantic Knowledge Base:
 ```bash
-python -m setup.setup_agents \
-  --kibana-url $KIBANA_URL \
-  --api-key $KIBANA_API_KEY
+python -m data.generate_knowledge_base --es-url $ELASTICSEARCH_URL --api-key $ELASTICSEARCH_API_KEY
 ```
 
-> **Re-run this any time you modify `agent_config/tools.json` or `agent_config/agents.json`.**
+### 4. Register Agents & Tools
 
-### 5. Run
+Deploys the 5 agents and 19 ES|QL tools to your Elastic Kibana instance:
+```bash
+python -m setup.setup_agents --kibana-url $KIBANA_URL --api-key $KIBANA_API_KEY
+```
+
+### 5. Run the Application
 
 ```bash
 # Terminal 1 — Backend
 uvicorn app.api:app --reload --port 8000
 
 # Terminal 2 — Frontend
-cd frontend && npm run dev
+cd frontend
+npm run dev
 ```
 
-Open **[http://localhost:5173](http://localhost:5173)** and click **🔍 Investigate** or select a quick-query chip.
+Open **[http://localhost:5173](http://localhost:5173)** and start investigating!
 
 ---
 
-## 📁 Project Structure
+## 🧪 Running the Test Suite
 
-```
-pharmavigil-ai/
-├── agent_config/
-│   ├── agents.json          # Agent definitions (system prompts, model config)
-│   └── tools.json           # 19 ES|QL tool definitions with parameterized queries
-├── app/
-│   ├── api.py               # FastAPI endpoints + WebSocket progress streaming
-│   ├── config.py            # Pydantic settings from .env
-│   ├── elastic_client.py    # Kibana Converse API client (with retry logic)
-│   └── graph/
-│       ├── graph.py         # LangGraph StateGraph definition + routing
-│       ├── nodes.py         # Agent node functions + signal parsing logic
-│       └── state.py         # PharmaVigilState TypedDict
-├── data/
-│   └── generate_faers_data.py   # Synthetic FAERS data generator
-├── frontend/
-│   └── src/
-│       ├── App.jsx           # Full React dashboard
-│       └── index.css         # Design system (dark theme, glassmorphism)
-├── setup/
-│   └── setup_agents.py      # Kibana agent/tool registration script
-├── test_groq.py             # Quick Groq API connectivity test
-├── requirements.txt
-└── .env.example
+The comprehensive scenario test validates routing, RAG accuracy, pipelines, and web-sockets. 
+
+```bash
+# Run all tests (takes ~10 mins)
+python tests/test_scenarios.py
+
+# Run a quick smoke test
+python tests/test_scenarios.py --category quick
+
+# Test specific functionality
+python tests/test_scenarios.py --category routing
+python tests/test_scenarios.py --category rag
 ```
 
 ---
 
-## 🏆 Hackathon Submission
+## 📊 Embedded Safety Signals (For Testing)
 
-Built for the **Elasticsearch Agent Builder Hackathon 2026** demonstrating:
+If you run a `full_scan` or `investigate` specific drugs, the system will identify these seeded signals automatically:
 
-- ✅ **Elastic Agent Builder** — 3 custom agents with 19 ES|QL tools
-- ✅ **Multi-agent orchestration** — LangGraph StateGraph with conditional routing
-- ✅ **Agent transparency** — Full reasoning trace visible in real-time UI
-- ✅ **Natural language interface** — Free-text + quick-query chip input
-- ✅ **Real-world use case** — Drug safety signal detection (pharmacovigilance)
-- ✅ **Production-quality** — Error handling, retry logic, WebSocket streaming
+| Target Drug | Priority | Identifying Pattern in Data | RAG Knowledge Base Concept |
+|---|---|---|---|
+| **Cardizol-X** | 🔴 HIGH | Massive 3.4x temporal spike in fatal cardiac arrhythmias. | Has strict cardiac contraindications. |
+| **Neurofen-Plus** | 🟡 MED | Elevated PRR for hepatotoxicity in elderly patients. | Prescribing info warns of liver risks in >65 age group. |
+| **Arthrex-200** | 🟢 LOW | Rhabdomyolysis events ONLY when co-prescribed with statins. | CYP2C9 inhibition mechanism explicitly outlined in label. |
+
+---
+
+## 🏆 Hackathon Features Delivered
+
+- ✅ **Elastic Agent Builder Integration**: 5 bespoke agents natively deployed to Kibana.
+- ✅ **ES\|QL Mastery**: 19 complex parameterized queries computing relative time windows, distributions, and cross-tabulations.
+- ✅ **Vector & Semantic Search (ELSER)**: Complete RAG implementation for complex domain knowledge.
+- ✅ **Multi-Agent Orchestration**: LangGraph state machine with deterministic LLM routing.
+- ✅ **Agent Transparency UI**: Custom React frontend visualizing every API request, ES\|QL query, and tool invocation in real-time.
+- ✅ **Resilience**: Automated Python testing suite & fault-tolerant agent fallback routines.
 
 ---
 
 ## 📜 License
-
 [MIT License](LICENSE)

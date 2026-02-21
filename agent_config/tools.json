@@ -155,6 +155,51 @@
                 }
             ],
             "query": "FROM faers_reports | WHERE drug_name == ?drug_name | STATS total_reports = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)), fatal_count = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)), last_90d = COUNT(CASE(report_date >= NOW() - 90 DAY, 1, null)), last_180d = COUNT(CASE(report_date >= NOW() - 180 DAY, 1, null)), avg_patient_age = AVG(patient_age) BY reaction_term | SORT total_reports DESC | LIMIT 20"
+        },
+        {
+            "toolId": "pharma.search_knowledge",
+            "name": "Search Pharma Knowledge Base",
+            "description": "Searches the pharmaceutical knowledge base for relevant information about drugs, pharmacovigilance methods, FDA guidelines, ICH standards, and regulatory processes. Use this tool when the user asks about drug information, safety guidelines, methodology (PRR, ROR, EBGM), regulatory actions, or any general pharmacovigilance question. Returns the most relevant knowledge documents.\n\nInput: search_query (natural language question)\nUsage: Use for ANY question about drug labels, prescribing information, warnings, contraindications, pharmacovigilance methods, or regulatory standards.\nExamples: 'What are the contraindications of Cardizol-X?', 'How is PRR calculated?', 'What are the ICH E2E guidelines?'",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "search_query",
+                    "description": "The search query or question to look up in the knowledge base",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM pharma_knowledge | WHERE content LIKE CONCAT(\"%\", ?search_query, \"%\") OR title LIKE CONCAT(\"%\", ?search_query, \"%\") | KEEP doc_id, title, category, drug_name, content | LIMIT 3"
+        },
+        {
+            "toolId": "pharma.search_drug_label",
+            "name": "Search Drug Label Information",
+            "description": "Retrieves prescribing information, warnings, contraindications, dosage, drug interactions, and adverse reactions for a specific drug from the knowledge base. Use this when the user asks about a drug's label, safety profile, or prescribing details.\n\nInput: drug_name (brand name of the drug)\nUsage: Use when investigating a specific drug's known safety profile, or when writing safety reports that need to reference the drug label.",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "drug_name",
+                    "description": "The brand name of the drug to look up",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM pharma_knowledge | WHERE drug_name == ?drug_name AND category == \"drug_label\" | KEEP doc_id, title, content | LIMIT 1"
+        },
+        {
+            "toolId": "pharma.search_regulatory_guidance",
+            "name": "Search Regulatory Guidance",
+            "description": "Searches for pharmacovigilance methodology, regulatory guidelines, ICH standards, signal detection methods, and ICSR assessment guidance. Use when the user asks about regulatory processes, signal classification, reporting timelines, or pharmacovigilance best practices.\n\nInput: topic (the regulatory or methodology topic to search for)\nExamples: 'signal detection', 'ICH E2E', 'ICSR assessment', 'FAERS database', 'regulatory actions'",
+            "type": "esql",
+            "parameters": [
+                {
+                    "name": "topic",
+                    "description": "The regulatory or methodology topic to search for",
+                    "type": "string",
+                    "required": true
+                }
+            ],
+            "query": "FROM pharma_knowledge | WHERE (category == \"methodology\" OR category == \"regulatory\") AND (content LIKE CONCAT(\"%\", ?topic, \"%\") OR title LIKE CONCAT(\"%\", ?topic, \"%\")) | KEEP doc_id, title, category, content | LIMIT 3"
         }
     ]
 }
