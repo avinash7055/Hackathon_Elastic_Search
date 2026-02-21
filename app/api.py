@@ -129,30 +129,6 @@ app.add_middleware(
 )
 
 
-# ── Mount Frontend ───────────────────────────────────────
-# We only mount this if the frontend/dist folder exists (which it will in the Docker container)
-frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
-
-if os.path.exists(frontend_dist):
-    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
-    
-    # Catch-all to support React Router SPA
-    @app.exception_handler(404)
-    async def react_router_catch_all(request, exc):
-        index_path = os.path.join(frontend_dist, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return {"detail": "Not Found"}
-else:
-    # Fallback if frontend is not built
-    @app.get("/")
-    async def root():
-        return {
-            "name": "PharmaVigil AI System API",
-            "version": "1.0.0",
-            "status": "Frontend not mounted. Run `npm run build` in the frontend directory.",
-            "docs": "/docs",
-        }
 
 
 # ── API Endpoints ────────────────────────────────────────
@@ -389,3 +365,28 @@ async def _broadcast_progress(investigation_id: str, data: dict):
 
     for ws in disconnected:
         clients.remove(ws)
+
+
+# ── Mount Frontend (Must be at bottom so it doesn't shadow /api or /ws) ──
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+    
+    # Catch-all to support React Router SPA
+    @app.exception_handler(404)
+    async def react_router_catch_all(request, exc):
+        index_path = os.path.join(frontend_dist, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"detail": "Not Found"}
+else:
+    # Fallback if frontend is not built
+    @app.get("/")
+    async def root():
+        return {
+            "name": "PharmaVigil AI System API",
+            "version": "1.0.0",
+            "status": "Frontend not mounted. Run `npm run build` in the frontend directory.",
+            "docs": "/docs",
+        }
