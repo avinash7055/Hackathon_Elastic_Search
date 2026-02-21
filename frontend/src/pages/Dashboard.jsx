@@ -21,7 +21,10 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import './Dashboard.css';
 
-const API_BASE = 'http://localhost:8000';
+// Use the current origin in production, default to localhost for local dev
+const API_BASE = window.location.origin.includes('localhost')
+    ? 'http://localhost:8000'
+    : window.location.origin;
 
 const QUERY_SUGGESTIONS = [
     'Scan for any emerging drug safety signals in the last 90 days',
@@ -180,7 +183,10 @@ export default function Dashboard() {
     const connectWebSocket = useCallback((investigationId) => {
         if (wsRef.current) wsRef.current.close();
 
-        const ws = new WebSocket(`ws://localhost:8000/ws/progress/${investigationId}`);
+        // Use wss:// in production natively when the page is https://
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = window.location.origin.includes('localhost') ? 'localhost:8000' : window.location.host;
+        const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/progress/${investigationId}`);
         wsRef.current = ws;
 
         ws.onmessage = (event) => {
