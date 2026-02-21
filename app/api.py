@@ -19,7 +19,9 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import os
 
 from app.config import settings
 from app.elastic_client import elastic_agent_client
@@ -126,16 +128,25 @@ app.add_middleware(
 )
 
 
-# ── Endpoints ────────────────────────────────────────────
+# ── Mount Frontend ───────────────────────────────────────
+# We only mount this if the frontend/dist folder exists (which it will in the Docker container)
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
 
-@app.get("/")
-async def root():
-    return {
-        "name": "PharmaVigil AI",
-        "version": "1.0.0",
-        "description": "Autonomous Drug Safety Signal Detection",
-        "docs": "/docs",
-    }
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+else:
+    # Fallback if frontend is not built
+    @app.get("/")
+    async def root():
+        return {
+            "name": "PharmaVigil AI System API",
+            "version": "1.0.0",
+            "status": "Frontend not mounted. Run `npm run build` in the frontend directory.",
+            "docs": "/docs",
+        }
+
+
+# ── API Endpoints ────────────────────────────────────────
 
 
 @app.get("/api/health", response_model=HealthResponse)

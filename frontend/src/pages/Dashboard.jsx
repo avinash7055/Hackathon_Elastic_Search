@@ -72,6 +72,7 @@ export default function Dashboard() {
     const streamTimerRef = useRef(null);
     const userScrolledRef = useRef(false);
     const scrollContainerRef = useRef(null);
+    const queuedCountRef = useRef(0);
 
     // Fetch health on mount
     useEffect(() => {
@@ -136,9 +137,10 @@ export default function Dashboard() {
 
     // Drip-feed reasoning steps one-by-one
     useEffect(() => {
-        if (reasoningSteps.length > displayedSteps.length) {
-            const newSteps = reasoningSteps.slice(displayedSteps.length);
+        if (reasoningSteps.length > queuedCountRef.current) {
+            const newSteps = reasoningSteps.slice(queuedCountRef.current);
             stepQueueRef.current.push(...newSteps);
+            queuedCountRef.current = reasoningSteps.length;
 
             if (!revealTimerRef.current) {
                 const revealNext = () => {
@@ -147,13 +149,18 @@ export default function Dashboard() {
                         return;
                     }
                     const next = stepQueueRef.current.shift();
-                    setDisplayedSteps(prev => [...prev, next]);
+                    setDisplayedSteps(prev => {
+                        // Anti-duplicate safeguard
+                        const exists = prev.some(p => p.content === next.content && p.timestamp === next.timestamp);
+                        if (exists) return prev;
+                        return [...prev, next];
+                    });
                     revealTimerRef.current = setTimeout(revealNext, 400);
                 };
                 revealTimerRef.current = setTimeout(revealNext, 400);
             }
         }
-    }, [reasoningSteps, displayedSteps.length]);
+    }, [reasoningSteps]);
 
     // Cycle status messages while active
     useEffect(() => {
@@ -226,6 +233,7 @@ export default function Dashboard() {
         setReasoningSteps([]);
         setDisplayedSteps([]);
         stepQueueRef.current = [];
+        queuedCountRef.current = 0;
         if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
         setSignals([]);
         setReports([]);
@@ -435,17 +443,24 @@ export default function Dashboard() {
                     <div className="dash-grid anim-fade-in-up">
                         {/* Left Panel: Reasoning Trace */}
                         <div className="dash-panel reasoning-panel">
-                            <div className="panel-header glass-card-static">
+                            <div className="panel-header">
                                 <FiCpu style={{ color: 'var(--accent-primary)' }} />
                                 <span className="heading-sm">Agent Reasoning</span>
                                 {isActive && <span className="spinner spinner-sm" />}
+                                {displayedSteps.length > 0 && (
+                                    <span className="badge badge-info" style={{ marginLeft: 'auto', fontSize: '0.65rem' }}>
+                                        {displayedSteps.length} steps
+                                    </span>
+                                )}
                             </div>
                             <div className="panel-body">
                                 {/* Status indicator */}
                                 {investigation && (
-                                    <div className="investigation-status glass-card-static">
+                                    <div className="investigation-status">
                                         <div className="flex items-center gap-md">
-                                            <span className="font-mono text-xs text-accent">{investigation.investigation_id}</span>
+                                            <span className="font-mono text-xs text-accent">
+                                                {investigation.investigation_id?.slice(0, 8)}...
+                                            </span>
                                             <span className={`badge ${status === 'complete' ? 'badge-low' : status === 'error' ? 'badge-critical' : 'badge-info'}`}>
                                                 {status === 'complete' ? '✓ Complete' : status === 'error' ? '✗ Error' : '⟳ Processing'}
                                             </span>
@@ -464,7 +479,6 @@ export default function Dashboard() {
                                         )}
                                     </div>
                                 )}
-
 
                                 {/* Reasoning steps — revealed one by one */}
                                 <div className="reasoning-list">
@@ -519,7 +533,7 @@ export default function Dashboard() {
 
                                 {/* Direct Response */}
                                 {(streamedResponse || directResponse) && (
-                                    <div className="direct-response glass-card-static anim-fade-in-up">
+                                    <div className="direct-response anim-fade-in-up">
                                         <div className="response-body">
                                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                                 {streamedResponse || directResponse}
@@ -533,49 +547,64 @@ export default function Dashboard() {
 
                         {/* Right Panel: Signals & Reports */}
                         <div className="dash-panel results-panel">
-                            {/* Signals */}
+                            {/* Detected Signals */}
                             <div className="results-section">
-                                <div className="panel-header glass-card-static">
+                                <div className="panel-header">
                                     <FiAlertTriangle style={{ color: 'var(--accent-warning)' }} />
                                     <span className="heading-sm">Detected Signals</span>
                                     {signals.length > 0 && (
-                                        <span className="badge badge-high">{signals.length}</span>
+                                        <span className="badge badge-high" style={{ marginLeft: 'auto' }}>{signals.length}</span>
                                     )}
                                 </div>
                                 <div className="panel-body">
                                     {signals.length === 0 ? (
-                                        <div className="empty-state text-center">
-                                            <FiAlertTriangle style={{ fontSize: '2rem', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)' }} />
-                                            <p className="text-sm text-muted">
-                                                {isActive ? 'Scanning for signals...' : 'No signals detected yet'}
-                                            </p>
+                                        <div className="empty-state">
+                                            <div className={`empty-state-icon signals-empty-icon ${isActive ? 'scanning-icon' : ''}`}>
+                                                <FiAlertTriangle />
+                                            </div>
+                                            <div className="empty-state-title">
+                                                {isActive ? 'Scanning for Signals...' : 'No Signals Detected'}
+                                            </div>
+                                            <div className="empty-state-desc">
+                                                {isActive
+                                                    ? 'Analyzing adverse event patterns across the FAERS database.'
+                                                    : 'Run a full scan or drug investigation to detect safety signals.'}
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="signals-list">
                                             {signals.map((sig, i) => (
-                                                <div key={i} className="signal-card glass-card">
+                                                <div
+                                                    key={i}
+                                                    className={`signal-card priority-${(sig.priority || 'low').toLowerCase()}`}
+                                                >
                                                     <div className="signal-header">
-                                                        <span className="font-mono" style={{ fontWeight: 600 }}>{sig.drug_name}</span>
+                                                        <span className="signal-drug-name">{sig.drug_name}</span>
                                                         <span className={`badge ${getPriorityClass(sig.priority)}`}>
                                                             {sig.priority}
                                                         </span>
                                                     </div>
-                                                    <div className="signal-reaction text-sm">→ {sig.reaction_term}</div>
+                                                    <div className="signal-reaction">
+                                                        <span className="signal-reaction-arrow">→</span>
+                                                        {sig.reaction_term}
+                                                    </div>
                                                     <div className="signal-stats">
                                                         <div className="signal-stat">
-                                                            <span className="text-xs text-muted">PRR</span>
-                                                            <span className="font-mono" style={{ color: sig.prr > 5 ? 'var(--accent-danger)' : 'var(--accent-warning)' }}>
+                                                            <span className="signal-stat-label">PRR</span>
+                                                            <span className={`signal-stat-value ${sig.prr > 5 ? 'stat-danger' : 'stat-warning'}`}>
                                                                 {sig.prr > 100 ? '∞' : sig.prr?.toFixed(1)}
                                                             </span>
                                                         </div>
                                                         <div className="signal-stat">
-                                                            <span className="text-xs text-muted">Cases</span>
-                                                            <span className="font-mono">{sig.case_count}</span>
+                                                            <span className="signal-stat-label">Cases</span>
+                                                            <span className="signal-stat-value stat-neutral">
+                                                                {sig.case_count?.toLocaleString()}
+                                                            </span>
                                                         </div>
                                                         <div className="signal-stat">
-                                                            <span className="text-xs text-muted">Spike</span>
-                                                            <span className="font-mono" style={{ color: sig.spike_ratio > 3 ? 'var(--accent-danger)' : 'var(--text-primary)' }}>
-                                                                {sig.spike_ratio?.toFixed(1)}x
+                                                            <span className="signal-stat-label">Spike</span>
+                                                            <span className={`signal-stat-value ${sig.spike_ratio > 3 ? 'stat-danger' : 'stat-neutral'}`}>
+                                                                {sig.spike_ratio?.toFixed(1)}×
                                                             </span>
                                                         </div>
                                                     </div>
@@ -586,33 +615,40 @@ export default function Dashboard() {
                                 </div>
                             </div>
 
-                            {/* Reports */}
+                            {/* Safety Reports */}
                             <div className="results-section">
-                                <div className="panel-header glass-card-static">
+                                <div className="panel-header">
                                     <HiOutlineDocumentReport style={{ color: 'var(--accent-secondary)' }} />
                                     <span className="heading-sm">Safety Reports</span>
                                     {reports.length > 0 && (
-                                        <span className="badge badge-low">{reports.length}</span>
+                                        <span className="badge badge-low" style={{ marginLeft: 'auto' }}>{reports.length}</span>
                                     )}
                                 </div>
                                 <div className="panel-body">
                                     {reports.length === 0 ? (
-                                        <div className="empty-state text-center">
-                                            <HiOutlineDocumentReport style={{ fontSize: '2rem', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)' }} />
-                                            <p className="text-sm text-muted">
-                                                {isActive ? 'Generating reports...' : 'No reports generated yet'}
-                                            </p>
+                                        <div className="empty-state">
+                                            <div className={`empty-state-icon reports-empty-icon ${isActive ? 'scanning-icon' : ''}`}>
+                                                <HiOutlineDocumentReport />
+                                            </div>
+                                            <div className="empty-state-title">
+                                                {isActive ? 'Generating Reports...' : 'No Reports Generated'}
+                                            </div>
+                                            <div className="empty-state-desc">
+                                                {isActive
+                                                    ? 'The Safety Reporter agent is compiling a structured assessment.'
+                                                    : 'Signal detection pipeline will automatically generate MedWatch-style reports.'}
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="reports-list">
                                             {reports.map((rpt, i) => (
                                                 <button
                                                     key={i}
-                                                    className={`report-card glass-card ${selectedReport === i ? 'selected' : ''}`}
+                                                    className={`report-card ${selectedReport === i ? 'selected' : ''}`}
                                                     onClick={() => setSelectedReport(selectedReport === i ? null : i)}
                                                 >
                                                     <div className="report-header">
-                                                        <span style={{ fontWeight: 600 }}>{rpt.drug_name}</span>
+                                                        <span style={{ fontWeight: 700 }}>{rpt.drug_name}</span>
                                                         <span className={`badge ${getPriorityClass(rpt.risk_level)}`}>
                                                             {rpt.risk_level}
                                                         </span>

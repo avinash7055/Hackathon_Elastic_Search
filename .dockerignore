@@ -1,0 +1,21 @@
+# node modules
+node_modules/
+frontend/node_modules/
+
+# build folders
+frontend/dist/
+dist/
+__pycache__/
+*.pyc
+
+# git
+.git/
+.github/
+
+# environments
+venv/
+.env
+
+# MacOS/Windows OS files
+.DS_Store
+Thumbs.db

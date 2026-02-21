@@ -1160,12 +1160,5 @@ async def compile_results_node(state: PharmaVigilState) -> dict:
     return {
         "status": "complete",
         "current_agent": "none",
-        "reasoning_trace": [{
-            "agent": "system",
-            "step_type": "conclusion",
-            "content": summary,
-            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-            "timestamp": _now_iso(),
-        }],
         "progress_messages": [summary],
     }
