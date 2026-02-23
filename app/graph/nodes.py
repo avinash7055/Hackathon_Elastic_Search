@@ -327,6 +327,28 @@ async def master_node(state: PharmaVigilState) -> dict:
     query = state.get("query", "")
     logger.info(f"Master Node: Classifying query — '{query[:80]}...'")
 
+    # ── STATIC GREETING HANDLER ──
+    greetings = {"hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "yo", "sup", "hi there", "hello there"}
+    q_clean = re.sub(r'[?!.]', '', query.lower().strip())
+    
+    if q_clean in greetings:
+        logger.info(f"Master Node: Static greeting detected — '{q_clean}'")
+        return {
+            "route": "greeting",
+            "extracted_drug": "",
+            "extracted_reaction": "",
+            "status": "routing",
+            "current_agent": "master_orchestrator",
+            "reasoning_trace": [{
+                "agent": "master_orchestrator",
+                "step_type": "conclusion",
+                "content": f"Greeting detected (\"{query}\"). Providing a friendly introduction.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            }],
+            "progress_messages": ["👋 Hello!"],
+        }
+
     reasoning = [{
         "agent": "master_orchestrator",
         "step_type": "thinking",
@@ -633,6 +655,31 @@ async def out_of_scope_node(state: PharmaVigilState) -> dict:
             "timestamp": _now_iso(),
         }],
         "progress_messages": ["🔒 Query is outside the pharmacovigilance domain"],
+    }
+
+
+async def greeting_node(state: PharmaVigilState) -> dict:
+    """Handles simple greetings with a friendly static response."""
+    query = state.get("query", "")
+    logger.info(f"Greeting Node: Responding to greeting — '{query[:80]}'")
+
+    greeting_response = (
+        "## 👋 Hello! I'm PharmaVigil AI\n\n"
+        "I'm your specialized assistant for **drug safety and pharmacovigilance**.\n\n"
+        "I can help you monitor emerging safety signals, investigate specific drugs, "
+        "and generate regulatory-grade safety assessment reports.\n\n"
+        "### How can I help you today?\n"
+        "- *\"Scan for emerging drug safety signals\"*\n"
+        "- *\"Investigate Cardizol-X for liver issues\"*\n"
+        "- *\"What is PRR in pharmacovigilance?\"*\n"
+        "- *\"Generate a safety report for Arthrex-200\"*"
+    )
+
+    return {
+        "status": "complete",
+        "direct_response": greeting_response,
+        "current_agent": "none",
+        "progress_messages": ["👋 Ready to assist with drug safety"],
     }
 
 
