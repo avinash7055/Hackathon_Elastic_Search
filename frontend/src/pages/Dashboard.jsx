@@ -6,28 +6,31 @@ import {
     HiOutlineDocumentReport,
 } from 'react-icons/hi';
 import {
-    FiSearch,
-    FiActivity,
     FiSend,
     FiLogOut,
     FiChevronDown,
     FiAlertTriangle,
     FiCpu,
     FiZap,
+    FiChevronUp,
+    FiDownload,
+    FiActivity,
+    FiTrash2,
+    FiMoreVertical,
 } from 'react-icons/fi';
+import { RiRobotLine, RiUserLine } from 'react-icons/ri';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import './Dashboard.css';
 
-// Use the current origin in production, default to localhost for local dev
 const API_BASE = window.location.origin.includes('localhost')
     ? 'http://localhost:8000'
     : window.location.origin;
 
 const QUERY_SUGGESTIONS = [
-    'Scan for any emerging drug safety signals in the last 90 days',
+    'Scan for emerging drug safety signals',
     'Investigate Cardizol-X for cardiac safety signals',
     'How many adverse events for Neurofen-Plus?',
     'What is PRR in pharmacovigilance?',
@@ -46,38 +49,299 @@ const STATUS_MESSAGES = [
     { icon: '✨', text: 'Compiling final report...' },
 ];
 
+const ROUTE_LABELS = {
+    full_scan: { label: '🔍 Full Scan', color: 'var(--accent-primary)' },
+    investigate: { label: '🔬 Investigation', color: 'var(--accent-tertiary)' },
+    report: { label: '📝 Report', color: 'var(--accent-secondary)' },
+    data_query: { label: '📊 Data Query', color: '#38bdf8' },
+    general: { label: '📚 Knowledge', color: '#34d399' },
+    out_of_scope: { label: '🔒 Out of Scope', color: '#fb923c' },
+};
 
+function getAgentColor(agent) {
+    switch (agent) {
+        case 'master_orchestrator': return 'var(--accent-tertiary)';
+        case 'signal_scanner': return 'var(--accent-primary)';
+        case 'case_investigator': return 'var(--accent-warning)';
+        case 'safety_reporter': return 'var(--accent-secondary)';
+        case 'data_query': return '#38bdf8';
+        default: return 'var(--text-muted)';
+    }
+}
+
+function getStepIcon(step) {
+    switch (step.step_type) {
+        case 'thinking': return '💭';
+        case 'tool_call': return '🔧';
+        case 'tool_result': return '📊';
+        case 'conclusion': return '✅';
+        default: return '📌';
+    }
+}
+
+function getPriorityClass(priority) {
+    switch ((priority || '').toUpperCase()) {
+        case 'CRITICAL': return 'badge-critical';
+        case 'HIGH': return 'badge-high';
+        case 'MEDIUM': return 'badge-medium';
+        case 'LOW': return 'badge-low';
+        default: return 'badge-info';
+    }
+}
+
+/* ─── Reasoning Steps (collapsible) ─────────────────────────────── */
+function ReasoningSection({ steps, isActive }) {
+    const [collapsed, setCollapsed] = useState(false);
+    if (steps.length === 0 && !isActive) return null;
+
+    return (
+        <div className="chat-reasoning-section">
+            <button className="chat-reasoning-toggle" onClick={() => setCollapsed(c => !c)}>
+                <FiCpu style={{ color: 'var(--accent-primary)', fontSize: '0.8rem' }} />
+                <span>Agent Reasoning</span>
+                <span className="reasoning-count-badge">{steps.length} steps</span>
+                {isActive && <span className="reasoning-live-dot" />}
+                {collapsed ? <FiChevronDown /> : <FiChevronUp />}
+            </button>
+            {!collapsed && (
+                <div className="chat-reasoning-body">
+                    {steps.map((step, i) => (
+                        <div
+                            key={i}
+                            className="chat-reasoning-step step-reveal"
+                            style={{ borderLeftColor: getAgentColor(step.agent) }}
+                        >
+                            <div className="step-header">
+                                <span className="step-icon">{getStepIcon(step)}</span>
+                                <span className="step-agent" style={{ color: getAgentColor(step.agent) }}>
+                                    {(step.agent || '').replace(/_/g, ' ')}
+                                </span>
+                                <span className="step-type badge badge-info" style={{ fontSize: '0.6rem' }}>
+                                    {step.step_type}
+                                </span>
+                            </div>
+                            <div className="step-content">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.content}</ReactMarkdown>
+                            </div>
+                            {step.tool_name && (
+                                <div className="step-tool font-mono text-xs">🛠️ {step.tool_name}</div>
+                            )}
+                            {step.tool_query && (
+                                <pre className="step-query font-mono text-xs">{step.tool_query}</pre>
+                            )}
+                        </div>
+                    ))}
+                    {isActive && (
+                        <div className="chat-thinking-row">
+                            <span className="typing-dots lg"><span /><span /><span /></span>
+                            <span className="text-xs text-muted">Agents are thinking...</span>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ─── Signal Card ────────────────────────────────────────────────── */
+function SignalCard({ sig }) {
+    return (
+        <div className={`chat-signal-card priority-${(sig.priority || 'low').toLowerCase()}`}>
+            <div className="signal-header">
+                <span className="signal-drug-name">{sig.drug_name}</span>
+                <span className={`badge ${getPriorityClass(sig.priority)}`}>{sig.priority}</span>
+            </div>
+            <div className="signal-reaction">
+                <span className="signal-reaction-arrow">→</span>
+                {sig.reaction_term}
+            </div>
+            <div className="signal-stats">
+                <div className="signal-stat">
+                    <span className="signal-stat-label">PRR</span>
+                    <span className={`signal-stat-value ${sig.prr > 5 ? 'stat-danger' : 'stat-warning'}`}>
+                        {sig.prr > 100 ? '∞' : sig.prr?.toFixed(1)}
+                    </span>
+                </div>
+                <div className="signal-stat">
+                    <span className="signal-stat-label">Cases</span>
+                    <span className="signal-stat-value stat-neutral">{sig.case_count?.toLocaleString()}</span>
+                </div>
+                <div className="signal-stat">
+                    <span className="signal-stat-label">Spike</span>
+                    <span className={`signal-stat-value ${sig.spike_ratio > 3 ? 'stat-danger' : 'stat-neutral'}`}>
+                        {sig.spike_ratio?.toFixed(1)}×
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ─── Report Card ────────────────────────────────────────────────── */
+function ReportCard({ rpt, index }) {
+    const [open, setOpen] = useState(false);
+
+    const handleDownloadPdf = async () => {
+        const element = document.getElementById(`report-pdf-${index}`);
+        if (!element) return;
+        try {
+            const canvas = await html2canvas(element, {
+                scale: 2, useCORS: true, backgroundColor: '#09090b', windowWidth: 800,
+            });
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+            pdf.save(`${rpt.drug_name}_Safety_Report.pdf`);
+        } catch (e) { console.error(e); }
+    };
+
+    return (
+        <div className={`chat-report-card ${open ? 'open' : ''}`}>
+            <button className="chat-report-header" onClick={() => setOpen(o => !o)}>
+                <div className="chat-report-meta">
+                    <HiOutlineDocumentReport style={{ color: 'var(--accent-secondary)', fontSize: '1rem' }} />
+                    <span className="chat-report-drug">{rpt.drug_name}</span>
+                    <span className={`badge ${getPriorityClass(rpt.risk_level)}`}>{rpt.risk_level}</span>
+                </div>
+                <div className="chat-report-subtitle">{rpt.reaction_term}</div>
+                <FiChevronDown className={`chat-report-chevron ${open ? 'rotated' : ''}`} />
+            </button>
+            {open && rpt.report_markdown && (
+                <div className="chat-report-body">
+                    <div className="chat-report-actions">
+                        <span className="badge badge-info text-xs">Safety Report</span>
+                        <button className="btn btn-sm btn-secondary" onClick={handleDownloadPdf}>
+                            <FiDownload /> Download PDF
+                        </button>
+                    </div>
+                    <div id={`report-pdf-${index}`} className="report-markdown-formatted">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{rpt.report_markdown}</ReactMarkdown>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ─── Chat Message ───────────────────────────────────────────────── */
+function ChatMessage({ msg }) {
+    if (msg.role === 'user') {
+        return (
+            <div className="chat-message chat-message-user">
+                <div className="chat-bubble chat-bubble-user">
+                    <p>{msg.content}</p>
+                </div>
+                <div className="chat-avatar chat-avatar-user">
+                    <RiUserLine />
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="chat-message chat-message-ai">
+            <div className="chat-avatar chat-avatar-ai">
+                <RiRobotLine />
+            </div>
+            <div className="chat-ai-content">
+                {msg.route && ROUTE_LABELS[msg.route] && (
+                    <div className="chat-route-badge" style={{ color: ROUTE_LABELS[msg.route].color }}>
+                        {ROUTE_LABELS[msg.route].label}
+                    </div>
+                )}
+
+                <ReasoningSection steps={msg.reasoningSteps || []} isActive={msg.isStreaming} />
+
+                {/* Only render once there is actual text streaming in */}
+                {msg.streamedResponse && (
+                    <div className="chat-response-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.streamedResponse}</ReactMarkdown>
+                        {msg.isTyping && <span className="stream-cursor">|</span>}
+                    </div>
+                )}
+
+                {msg.signals?.length > 0 && (
+                    <div className="chat-results-section">
+                        <div className="chat-results-label">
+                            <FiAlertTriangle style={{ color: 'var(--accent-warning)' }} />
+                            <span>{msg.signals.length} Safety Signal{msg.signals.length > 1 ? 's' : ''} Detected</span>
+                        </div>
+                        <div className="chat-signals-grid">
+                            {msg.signals.map((sig, i) => <SignalCard key={i} sig={sig} />)}
+                        </div>
+                    </div>
+                )}
+
+                {msg.reports?.length > 0 && (
+                    <div className="chat-results-section">
+                        <div className="chat-results-label">
+                            <HiOutlineDocumentReport style={{ color: 'var(--accent-secondary)' }} />
+                            <span>{msg.reports.length} Safety Report{msg.reports.length > 1 ? 's' : ''} Generated</span>
+                        </div>
+                        <div className="chat-reports-list">
+                            {msg.reports.map((rpt, i) => (
+                                <ReportCard key={i} rpt={rpt} index={`${msg.id}-${i}`} />
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {msg.error && (
+                    <div className="chat-error-card">⚠️ Something went wrong. Please try again.</div>
+                )}
+
+                {msg.timestamp && (
+                    <div className="chat-timestamp">{msg.timestamp}</div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+/* ─── Typing indicator (while waiting for first WS data) ─────────── */
+function TypingMessage({ statusMessage }) {
+    return (
+        <div className="chat-message chat-message-ai">
+            <div className="chat-avatar chat-avatar-ai"><RiRobotLine /></div>
+            <div className="chat-ai-content">
+                <div className="chat-typing-card glass-card-static">
+                    <span className="typing-dots lg"><span /><span /><span /></span>
+                    <span className="text-xs text-muted" style={{ fontStyle: 'italic' }}>
+                        {statusMessage.icon} {statusMessage.text}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ─── Main Dashboard ─────────────────────────────────────────────── */
 export default function Dashboard() {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
-    const [query, setQuery] = useState('');
+
+    const [input, setInput] = useState('');
+    const [messages, setMessages] = useState([]);
     const [health, setHealth] = useState(null);
-    const [investigation, setInvestigation] = useState(null);
-    const [wsMessages, setWsMessages] = useState([]);
-    const [reasoningSteps, setReasoningSteps] = useState([]);
-    const [signals, setSignals] = useState([]);
-    const [reports, setReports] = useState([]);
-    const [directResponse, setDirectResponse] = useState('');
-    const [route, setRoute] = useState('');
-    const [status, setStatus] = useState('idle');
-    const [showSuggestions, setShowSuggestions] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
     const [showUserMenu, setShowUserMenu] = useState(false);
-    const [selectedReport, setSelectedReport] = useState(null);
-    const [displayedSteps, setDisplayedSteps] = useState([]);
     const [statusMessage, setStatusMessage] = useState(STATUS_MESSAGES[0]);
-    const [streamedResponse, setStreamedResponse] = useState('');
-    const [isStreaming, setIsStreaming] = useState(false);
+
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
+    const inputRef = useRef(null);
+    const userMenuRef = useRef(null);          // ← ref for outside-click detection
+    const currentMsgIdRef = useRef(null);
     const stepQueueRef = useRef([]);
     const revealTimerRef = useRef(null);
-    const fullResponseRef = useRef('');
-    const streamTimerRef = useRef(null);
-    const userScrolledRef = useRef(false);
-    const scrollContainerRef = useRef(null);
     const queuedCountRef = useRef(0);
+    const streamTimerRef = useRef(null);
+    const fullResponseRef = useRef('');
+    const statusIntervalRef = useRef(null);
 
-    // Fetch health on mount
+    // Fetch health
     useEffect(() => {
         fetch(`${API_BASE}/api/health`)
             .then(r => r.json())
@@ -85,105 +349,96 @@ export default function Dashboard() {
             .catch(() => setHealth({ status: 'offline' }));
     }, []);
 
-    // Track if user scrolled up manually
+    // Close user menu when clicking outside
     useEffect(() => {
-        const handleScroll = () => {
-            const el = document.documentElement;
-            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-            // If user is more than 150px from bottom, they scrolled up manually
-            userScrolledRef.current = distanceFromBottom > 150;
+        if (!showUserMenu) return;
+        const handler = (e) => {
+            if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+                setShowUserMenu(false);
+            }
         };
-        window.addEventListener('scroll', handleScroll, { passive: true });
-        return () => window.removeEventListener('scroll', handleScroll);
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showUserMenu]);
+
+    // Auto-scroll to bottom
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    // Cycle status messages while processing
+    useEffect(() => {
+        if (isProcessing) {
+            let idx = 0;
+            statusIntervalRef.current = setInterval(() => {
+                idx = (idx + 1) % STATUS_MESSAGES.length;
+                setStatusMessage(STATUS_MESSAGES[idx]);
+            }, 3000);
+        } else {
+            clearInterval(statusIntervalRef.current);
+        }
+        return () => clearInterval(statusIntervalRef.current);
+    }, [isProcessing]);
+
+    const updateCurrentMessage = useCallback((updater) => {
+        const id = currentMsgIdRef.current;
+        if (!id) return;
+        setMessages(prev => prev.map(m => m.id === id ? { ...m, ...updater(m) } : m));
     }, []);
 
-    // Smart auto-scroll: only scroll down if user hasn't scrolled up
-    useEffect(() => {
-        if (!userScrolledRef.current) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }
-    }, [wsMessages, displayedSteps]);
+    const drainReasoningQueue = useCallback(() => {
+        if (revealTimerRef.current) return;
+        const revealNext = () => {
+            if (stepQueueRef.current.length === 0) {
+                revealTimerRef.current = null;
+                return;
+            }
+            const next = stepQueueRef.current.shift();
+            const id = currentMsgIdRef.current;
+            setMessages(prev => prev.map(m => {
+                if (m.id !== id) return m;
+                const exists = (m.reasoningSteps || []).some(
+                    p => p.content === next.content && p.timestamp === next.timestamp
+                );
+                if (exists) return m;
+                return { ...m, reasoningSteps: [...(m.reasoningSteps || []), next] };
+            }));
+            revealTimerRef.current = setTimeout(revealNext, 350);
+        };
+        revealTimerRef.current = setTimeout(revealNext, 350);
+    }, []);
 
-    // Stream response word-by-word when directResponse arrives
-    useEffect(() => {
-        if (!directResponse || directResponse === fullResponseRef.current) return;
-
-        // New response arrived — start streaming
-        fullResponseRef.current = directResponse;
-        setStreamedResponse('');
-        setIsStreaming(true);
-
-        // Clear any previous stream timer
+    const startStreaming = useCallback((text) => {
+        if (text === fullResponseRef.current) return;
+        fullResponseRef.current = text;
         if (streamTimerRef.current) clearInterval(streamTimerRef.current);
 
-        const words = directResponse.split(/( )/); // split keeping spaces
+        const words = text.split(/( )/);
         let index = 0;
 
-        streamTimerRef.current = setInterval(() => {
-            // Reveal multiple chars at once for speed (chunk of ~3 words)
-            const chunk = words.slice(index, index + 3).join('');
-            index += 3;
-            setStreamedResponse(prev => prev + chunk);
+        updateCurrentMessage(m => ({ ...m, streamedResponse: '', isTyping: true }));
 
+        streamTimerRef.current = setInterval(() => {
+            const chunk = words.slice(index, index + 4).join('');
+            index += 4;
+            const id = currentMsgIdRef.current;
+            setMessages(prev => prev.map(m => {
+                if (m.id !== id) return m;
+                return { ...m, streamedResponse: (m.streamedResponse || '') + chunk };
+            }));
             if (index >= words.length) {
                 clearInterval(streamTimerRef.current);
                 streamTimerRef.current = null;
-                setStreamedResponse(directResponse); // ensure full text
-                setIsStreaming(false);
+                setMessages(prev => prev.map(m =>
+                    m.id === id ? { ...m, streamedResponse: text, isTyping: false } : m
+                ));
             }
-        }, 20);
-
-        return () => {
-            if (streamTimerRef.current) clearInterval(streamTimerRef.current);
-        };
-    }, [directResponse]);
-
-    // Drip-feed reasoning steps one-by-one
-    useEffect(() => {
-        if (reasoningSteps.length > queuedCountRef.current) {
-            const newSteps = reasoningSteps.slice(queuedCountRef.current);
-            stepQueueRef.current.push(...newSteps);
-            queuedCountRef.current = reasoningSteps.length;
-
-            if (!revealTimerRef.current) {
-                const revealNext = () => {
-                    if (stepQueueRef.current.length === 0) {
-                        revealTimerRef.current = null;
-                        return;
-                    }
-                    const next = stepQueueRef.current.shift();
-                    setDisplayedSteps(prev => {
-                        // Anti-duplicate safeguard
-                        const exists = prev.some(p => p.content === next.content && p.timestamp === next.timestamp);
-                        if (exists) return prev;
-                        return [...prev, next];
-                    });
-                    revealTimerRef.current = setTimeout(revealNext, 400);
-                };
-                revealTimerRef.current = setTimeout(revealNext, 400);
-            }
-        }
-    }, [reasoningSteps]);
-
-    // Cycle status messages while active
-    useEffect(() => {
-        if (!isActiveStatus(status)) return;
-        let idx = 0;
-        const interval = setInterval(() => {
-            idx = (idx + 1) % STATUS_MESSAGES.length;
-            setStatusMessage(STATUS_MESSAGES[idx]);
-        }, 3000);
-        return () => clearInterval(interval);
-    }, [status]);
-
-    function isActiveStatus(s) {
-        return s !== 'idle' && s !== 'complete' && s !== 'error';
-    }
+        }, 18);
+    }, [updateCurrentMessage]);
 
     const connectWebSocket = useCallback((investigationId) => {
         if (wsRef.current) wsRef.current.close();
 
-        // Use wss:// in production natively when the page is https://
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = window.location.origin.includes('localhost') ? 'localhost:8000' : window.location.host;
         const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/progress/${investigationId}`);
@@ -194,80 +449,116 @@ export default function Dashboard() {
 
             if (msg.type === 'current_state') {
                 const d = msg.data;
-                setStatus(d.status);
-                if (d.reasoning_trace) setReasoningSteps(d.reasoning_trace);
+                if (d.reasoning_trace?.length) {
+                    stepQueueRef.current.push(...d.reasoning_trace);
+                    drainReasoningQueue();
+                }
             }
 
             if (msg.type === 'progress') {
                 const d = msg.data;
 
                 if (d.type === 'reasoning' && d.steps) {
-                    setReasoningSteps(prev => [...prev, ...d.steps]);
+                    stepQueueRef.current.push(...d.steps);
+                    drainReasoningQueue();
                     return;
                 }
 
-                if (d.status) setStatus(d.status);
-                if (d.route) setRoute(d.route);
-                if (d.direct_response) setDirectResponse(d.direct_response);
+                if (d.route) {
+                    updateCurrentMessage(m => ({ ...m, route: d.route }));
+                }
 
-                setWsMessages(prev => [...prev, d]);
+                if (d.direct_response) {
+                    startStreaming(d.direct_response);
+                }
 
                 if (d.status === 'complete' || d.status === 'error') {
-                    // Fetch final investigation data
                     fetch(`${API_BASE}/api/investigations/${investigationId}`)
                         .then(r => r.json())
                         .then(inv => {
-                            if (inv.signals) setSignals(inv.signals);
-                            if (inv.reports) setReports(inv.reports);
-                            if (inv.direct_response) setDirectResponse(inv.direct_response);
-                            if (inv.reasoning_trace) setReasoningSteps(inv.reasoning_trace);
+                            const id = currentMsgIdRef.current;
+                            setMessages(prev => prev.map(m => {
+                                if (m.id !== id) return m;
+                                return {
+                                    ...m,
+                                    signals: inv.signals || [],
+                                    reports: inv.reports || [],
+                                    streamedResponse: inv.direct_response || m.streamedResponse || '',
+                                    isStreaming: false,
+                                    isTyping: false,
+                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                };
+                            }));
+                            setIsProcessing(false);
+                            currentMsgIdRef.current = null;
+                            setTimeout(() => inputRef.current?.focus(), 100);
                         })
-                        .catch(console.error);
+                        .catch(() => {
+                            setIsProcessing(false);
+                            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false }));
+                        });
                 }
             }
         };
 
-        ws.onerror = () => setStatus('error');
-    }, []);
+        ws.onerror = () => {
+            setIsProcessing(false);
+            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false }));
+        };
+    }, [drainReasoningQueue, startStreaming, updateCurrentMessage]);
 
-    const handleInvestigate = async () => {
-        if (!query.trim()) return;
+    const handleSend = async () => {
+        const q = input.trim();
+        if (!q || isProcessing) return;
 
-        // Reset state
-        setStatus('starting');
-        setWsMessages([]);
-        setReasoningSteps([]);
-        setDisplayedSteps([]);
+        setInput('');
+
+        // Reset queues
         stepQueueRef.current = [];
         queuedCountRef.current = 0;
-        if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
-        setSignals([]);
-        setReports([]);
-        setDirectResponse('');
-        setStreamedResponse('');
-        setIsStreaming(false);
         fullResponseRef.current = '';
+        if (revealTimerRef.current) { clearTimeout(revealTimerRef.current); revealTimerRef.current = null; }
         if (streamTimerRef.current) { clearInterval(streamTimerRef.current); streamTimerRef.current = null; }
-        setRoute('');
-        setSelectedReport(null);
-        setShowSuggestions(false);
+
+        const userMsgId = Date.now() + '-user';
+        setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: q }]);
+
+        const aiMsgId = Date.now() + '-ai';
+        currentMsgIdRef.current = aiMsgId;
+        setMessages(prev => [...prev, {
+            id: aiMsgId,
+            role: 'ai',
+            reasoningSteps: [],
+            streamedResponse: '',
+            signals: [],
+            reports: [],
+            route: '',
+            isStreaming: true,
+            isTyping: false,
+            error: false,
+        }]);
+
+        setIsProcessing(true);
         setStatusMessage(STATUS_MESSAGES[0]);
-        userScrolledRef.current = false;
 
         try {
             const res = await fetch(`${API_BASE}/api/investigate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: query.trim() }),
+                body: JSON.stringify({ query: q }),
             });
             const data = await res.json();
-            setInvestigation(data);
-            setStatus(data.status);
             connectWebSocket(data.investigation_id);
         } catch (err) {
-            setStatus('error');
-            setWsMessages([{ node: 'error', status: 'error', error: err.message }]);
+            setIsProcessing(false);
+            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false }));
         }
+    };
+
+    const handleClearChat = () => {
+        setMessages([]);
+        if (wsRef.current) wsRef.current.close();
+        setIsProcessing(false);
     };
 
     const handleLogout = () => {
@@ -275,100 +566,95 @@ export default function Dashboard() {
         navigate('/');
     };
 
-    const handleDownloadPdf = async (report, index) => {
-        const element = document.getElementById(`report-pdf-content-${index}`);
-        if (!element) return;
+    const isHealthy = health?.status === 'healthy';
 
-        try {
-            // Temporarily applying light theme or strict styling for PDF if needed
-            // But we can stick to dark theme with high res scale
-            const canvas = await html2canvas(element, {
-                scale: 2,
-                useCORS: true,
-                backgroundColor: '#09090b', // match dark theme
-                windowWidth: 800
-            });
-            const imgData = canvas.toDataURL('image/png');
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const pdfWidth = pdf.internal.pageSize.getWidth();
-            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-
-            // If the content is longer than one page, jsPDF handles basic image stretching/scaling,
-            // For a perfect multi-page, it's more complex, but for this hackathon, scrolling it into one scaled page or a long page is fine.
-            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-            pdf.save(`${report.drug_name}_Safety_Report.pdf`);
-        } catch (error) {
-            console.error("Error generating PDF", error);
-        }
-    };
-
-    const getStatusColor = () => {
-        if (!health) return 'var(--text-muted)';
-        return health.status === 'healthy' ? 'var(--accent-secondary)' : 'var(--accent-warning)';
-    };
-
-    const getStepIcon = (step) => {
-        switch (step.step_type) {
-            case 'thinking': return '💭';
-            case 'tool_call': return '🔧';
-            case 'tool_result': return '📊';
-            case 'conclusion': return '✅';
-            default: return '📌';
-        }
-    };
-
-    const getAgentColor = (agent) => {
-        switch (agent) {
-            case 'master_orchestrator': return 'var(--accent-tertiary)';
-            case 'signal_scanner': return 'var(--accent-primary)';
-            case 'case_investigator': return 'var(--accent-warning)';
-            case 'safety_reporter': return 'var(--accent-secondary)';
-            case 'data_query': return 'var(--accent-primary)';
-            default: return 'var(--text-muted)';
-        }
-    };
-
-    const getPriorityClass = (priority) => {
-        switch ((priority || '').toUpperCase()) {
-            case 'CRITICAL': return 'badge-critical';
-            case 'HIGH': return 'badge-high';
-            case 'MEDIUM': return 'badge-medium';
-            case 'LOW': return 'badge-low';
-            default: return 'badge-info';
-        }
-    };
-
-    const isActive = isActiveStatus(status);
+    // Show typing indicator only while waiting before the AI placeholder appears with reasoning
+    const showTypingIndicator = isProcessing && messages.length > 0 && messages[messages.length - 1]?.role === 'user';
 
     return (
-        <div className="dashboard">
+        <div className="chatbot-layout">
             <div className="app-bg" />
 
-            {/* ── Top Nav ──────────────── */}
-            <nav className="dash-nav glass-card-static">
-                <div className="dash-nav-inner">
-                    <div className="flex items-center gap-md">
-                        <div className="nav-logo" style={{ width: 34, height: 34, fontSize: '1rem' }}>
-                            <HiOutlineShieldCheck />
-                        </div>
-                        <span className="nav-title" style={{ fontSize: '1rem' }}>PharmaVigil</span>
+            {/* ── Sidebar ──────────────────────────────────────── */}
+            <aside className="chat-sidebar glass-card-static">
+                <div className="sidebar-brand">
+                    <div className="nav-logo">
+                        <HiOutlineShieldCheck />
+                    </div>
+                    <div>
+                        <span className="nav-title">PharmaVigil</span>
                         <span className="nav-badge">AI</span>
                     </div>
+                </div>
 
-                    <div className="flex items-center gap-lg">
-                        {/* Health indicator */}
-                        <div className="health-indicator" style={{ color: getStatusColor() }}>
-                            <FiActivity />
-                            <span className="text-xs">
-                                {health ? health.status : 'Checking...'}
-                            </span>
+                <div className="sidebar-divider" />
+
+                <button className="sidebar-new-chat" onClick={handleClearChat}>
+                    <FiTrash2 />
+                    <span>Clear Chat</span>
+                </button>
+
+                <div className="sidebar-section-label">Quick Queries</div>
+                <div className="sidebar-suggestions">
+                    {QUERY_SUGGESTIONS.map((s, i) => (
+                        <button
+                            key={i}
+                            className="sidebar-suggestion-item"
+                            onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                        >
+                            {s}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="sidebar-footer">
+                    <div className="sidebar-health">
+                        <FiActivity style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }} />
+                        <span className="text-xs" style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
+                            {health ? health.status : 'Checking...'}
+                        </span>
+                        <span className={`health-dot ${isHealthy ? 'healthy' : 'offline'}`} />
+                    </div>
+
+                    <div className="sidebar-user-info-row">
+                        <div className="user-avatar">{user?.avatar || '?'}</div>
+                        <div className="sidebar-user-text">
+                            <span className="text-sm" style={{ fontWeight: 600 }}>{user?.name}</span>
+                            <span className="text-xs text-muted">{user?.email}</span>
                         </div>
+                        <button
+                            className="sidebar-logout-btn"
+                            onClick={handleLogout}
+                            title="Logout"
+                        >
+                            <FiLogOut />
+                        </button>
+                    </div>
+                </div>
+            </aside>
 
-                        {/* User menu */}
-                        <div className="user-menu-wrapper">
+            {/* ── Chat Area ──────────────────────────────────── */}
+            <div className="chat-area">
+
+                {/* Header */}
+                <header className="chat-header glass-card-static">
+                    <div className="chat-header-title">
+                        <HiOutlineShieldCheck style={{ color: 'var(--accent-primary)' }} />
+                        <span className="heading-sm">Drug Safety Investigation</span>
+                    </div>
+                    <div className="chat-header-actions">
+                        <div className="health-indicator" style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
+                            <FiActivity />
+                            <span className="text-xs">{health ? health.status : '...'}</span>
+                        </div>
+                        <button className="btn btn-ghost btn-sm" onClick={handleClearChat}>
+                            <FiTrash2 /> Clear
+                        </button>
+                        {/* User menu — ref attached here for outside-click detection */}
+                        <div className="user-menu-wrapper" ref={userMenuRef}>
                             <button
                                 className="user-menu-btn"
-                                onClick={() => setShowUserMenu(!showUserMenu)}
+                                onClick={() => setShowUserMenu(s => !s)}
                             >
                                 <div className="user-avatar">{user?.avatar || '?'}</div>
                                 <span className="text-sm hide-mobile">{user?.name}</span>
@@ -377,7 +663,7 @@ export default function Dashboard() {
                             {showUserMenu && (
                                 <div className="user-dropdown glass-card anim-fade-in">
                                     <div className="dropdown-header">
-                                        <div className="user-avatar" style={{ width: 36, height: 36, fontSize: '0.9rem' }}>
+                                        <div className="user-avatar" style={{ width: 36, height: 36 }}>
                                             {user?.avatar}
                                         </div>
                                         <div>
@@ -393,332 +679,83 @@ export default function Dashboard() {
                             )}
                         </div>
                     </div>
-                </div>
-            </nav>
+                </header>
 
-            {/* ── Main Content ────────── */}
-            <main className="dash-main">
-                {/* Close suggestions on outside click */}
-                {showSuggestions && (
-                    <div className="suggestions-overlay" onClick={() => setShowSuggestions(false)} />
-                )}
-
-                {/* Query Input */}
-                <section className="query-section anim-fade-in-down">
-                    <div className="query-bar glass-card-static">
-                        <FiSearch className="query-icon" />
-                        <input
-                            className="query-input"
-                            type="text"
-                            placeholder="Ask about drug safety signals, investigate a drug, or query data..."
-                            value={query}
-                            onChange={e => setQuery(e.target.value)}
-                            onFocus={() => setShowSuggestions(true)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter') { setShowSuggestions(false); handleInvestigate(); }
-                                if (e.key === 'Escape') setShowSuggestions(false);
-                            }}
-                        />
-                        <button
-                            className="btn btn-primary btn-sm"
-                            onClick={() => { setShowSuggestions(false); handleInvestigate(); }}
-                            disabled={!query.trim() || isActive}
-                        >
-                            {isActive ? <span className="spinner spinner-sm" /> : <><FiSend /> Investigate</>}
-                        </button>
-                    </div>
-
-                    {showSuggestions && !isActive && (
-                        <div className="suggestions-dropdown glass-card anim-fade-in">
-                            {QUERY_SUGGESTIONS.map((s, i) => (
-                                <button
-                                    key={i}
-                                    className="suggestion-item"
-                                    onClick={() => { setQuery(s); setShowSuggestions(false); }}
-                                >
-                                    <FiZap style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-                                    {s}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </section>
-
-                {/* Dashboard Grid */}
-                {status !== 'idle' && (
-                    <div className="dash-grid anim-fade-in-up">
-                        {/* Left Panel: Reasoning Trace */}
-                        <div className="dash-panel reasoning-panel">
-                            <div className="panel-header">
-                                <FiCpu style={{ color: 'var(--accent-primary)' }} />
-                                <span className="heading-sm">Agent Reasoning</span>
-                                {isActive && <span className="spinner spinner-sm" />}
-                                {displayedSteps.length > 0 && (
-                                    <span className="badge badge-info" style={{ marginLeft: 'auto', fontSize: '0.65rem' }}>
-                                        {displayedSteps.length} steps
-                                    </span>
-                                )}
-                            </div>
-                            <div className="panel-body">
-                                {/* Status indicator */}
-                                {investigation && (
-                                    <div className="investigation-status">
-                                        <div className="flex items-center gap-md">
-                                            <span className="font-mono text-xs text-accent">
-                                                {investigation.investigation_id?.slice(0, 8)}...
-                                            </span>
-                                            <span className={`badge ${status === 'complete' ? 'badge-low' : status === 'error' ? 'badge-critical' : 'badge-info'}`}>
-                                                {status === 'complete' ? '✓ Complete' : status === 'error' ? '✗ Error' : '⟳ Processing'}
-                                            </span>
-                                        </div>
-                                        {route && (
-                                            <span className={`route-badge route-${route}`}>
-                                                {{
-                                                    full_scan: '🔍 Full Scan',
-                                                    investigate: '🔬 Investigation',
-                                                    report: '📝 Report',
-                                                    data_query: '📊 Data Query',
-                                                    general: '📚 Knowledge',
-                                                    out_of_scope: '🔒 Out of Scope',
-                                                }[route] || route}
-                                            </span>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* Reasoning steps — revealed one by one */}
-                                <div className="reasoning-list">
-                                    {displayedSteps.map((step, i) => (
-                                        <div
-                                            key={i}
-                                            className="reasoning-step step-reveal"
-                                            style={{
-                                                borderLeftColor: getAgentColor(step.agent),
-                                                animationDelay: '0ms',
-                                            }}
-                                        >
-                                            <div className="step-header">
-                                                <span className="step-icon">{getStepIcon(step)}</span>
-                                                <span className="step-agent" style={{ color: getAgentColor(step.agent) }}>
-                                                    {(step.agent || '').replace(/_/g, ' ')}
-                                                </span>
-                                                <span className="step-type badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                                    {step.step_type}
-                                                </span>
-                                            </div>
-                                            <div className="step-content">
-                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                    {step.content}
-                                                </ReactMarkdown>
-                                            </div>
-                                            {step.tool_name && (
-                                                <div className="step-tool font-mono text-xs">
-                                                    🛠️ {step.tool_name}
-                                                </div>
-                                            )}
-                                            {step.tool_query && (
-                                                <pre className="step-query font-mono text-xs">{step.tool_query}</pre>
-                                            )}
-                                            {step.tool_result && (
-                                                <div className="step-result text-xs">{step.tool_result}</div>
-                                            )}
-                                        </div>
-                                    ))}
-
-                                    {/* Typing indicator while agent is still working */}
-                                    {isActive && (
-                                        <div className="thinking-indicator glass-card-static anim-fade-in">
-                                            <span className="typing-dots lg">
-                                                <span /><span /><span />
-                                            </span>
-                                            <span className="text-xs text-muted">Agent is thinking...</span>
-                                        </div>
-                                    )}
-                                    <div ref={messagesEndRef} />
-                                </div>
-
-                                {/* Direct Response */}
-                                {(streamedResponse || directResponse) && (
-                                    <div className="direct-response anim-fade-in-up">
-                                        <div className="response-body">
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                {streamedResponse || directResponse}
-                                            </ReactMarkdown>
-                                            {isStreaming && <span className="stream-cursor">|</span>}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Right Panel: Signals & Reports */}
-                        <div className="dash-panel results-panel">
-                            {/* Detected Signals */}
-                            <div className="results-section">
-                                <div className="panel-header">
-                                    <FiAlertTriangle style={{ color: 'var(--accent-warning)' }} />
-                                    <span className="heading-sm">Detected Signals</span>
-                                    {signals.length > 0 && (
-                                        <span className="badge badge-high" style={{ marginLeft: 'auto' }}>{signals.length}</span>
-                                    )}
-                                </div>
-                                <div className="panel-body">
-                                    {signals.length === 0 ? (
-                                        <div className="empty-state">
-                                            <div className={`empty-state-icon signals-empty-icon ${isActive ? 'scanning-icon' : ''}`}>
-                                                <FiAlertTriangle />
-                                            </div>
-                                            <div className="empty-state-title">
-                                                {isActive ? 'Scanning for Signals...' : 'No Signals Detected'}
-                                            </div>
-                                            <div className="empty-state-desc">
-                                                {isActive
-                                                    ? 'Analyzing adverse event patterns across the FAERS database.'
-                                                    : 'Run a full scan or drug investigation to detect safety signals.'}
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="signals-list">
-                                            {signals.map((sig, i) => (
-                                                <div
-                                                    key={i}
-                                                    className={`signal-card priority-${(sig.priority || 'low').toLowerCase()}`}
-                                                >
-                                                    <div className="signal-header">
-                                                        <span className="signal-drug-name">{sig.drug_name}</span>
-                                                        <span className={`badge ${getPriorityClass(sig.priority)}`}>
-                                                            {sig.priority}
-                                                        </span>
-                                                    </div>
-                                                    <div className="signal-reaction">
-                                                        <span className="signal-reaction-arrow">→</span>
-                                                        {sig.reaction_term}
-                                                    </div>
-                                                    <div className="signal-stats">
-                                                        <div className="signal-stat">
-                                                            <span className="signal-stat-label">PRR</span>
-                                                            <span className={`signal-stat-value ${sig.prr > 5 ? 'stat-danger' : 'stat-warning'}`}>
-                                                                {sig.prr > 100 ? '∞' : sig.prr?.toFixed(1)}
-                                                            </span>
-                                                        </div>
-                                                        <div className="signal-stat">
-                                                            <span className="signal-stat-label">Cases</span>
-                                                            <span className="signal-stat-value stat-neutral">
-                                                                {sig.case_count?.toLocaleString()}
-                                                            </span>
-                                                        </div>
-                                                        <div className="signal-stat">
-                                                            <span className="signal-stat-label">Spike</span>
-                                                            <span className={`signal-stat-value ${sig.spike_ratio > 3 ? 'stat-danger' : 'stat-neutral'}`}>
-                                                                {sig.spike_ratio?.toFixed(1)}×
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Safety Reports */}
-                            <div className="results-section">
-                                <div className="panel-header">
-                                    <HiOutlineDocumentReport style={{ color: 'var(--accent-secondary)' }} />
-                                    <span className="heading-sm">Safety Reports</span>
-                                    {reports.length > 0 && (
-                                        <span className="badge badge-low" style={{ marginLeft: 'auto' }}>{reports.length}</span>
-                                    )}
-                                </div>
-                                <div className="panel-body">
-                                    {reports.length === 0 ? (
-                                        <div className="empty-state">
-                                            <div className={`empty-state-icon reports-empty-icon ${isActive ? 'scanning-icon' : ''}`}>
-                                                <HiOutlineDocumentReport />
-                                            </div>
-                                            <div className="empty-state-title">
-                                                {isActive ? 'Generating Reports...' : 'No Reports Generated'}
-                                            </div>
-                                            <div className="empty-state-desc">
-                                                {isActive
-                                                    ? 'The Safety Reporter agent is compiling a structured assessment.'
-                                                    : 'Signal detection pipeline will automatically generate MedWatch-style reports.'}
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="reports-list">
-                                            {reports.map((rpt, i) => (
-                                                <button
-                                                    key={i}
-                                                    className={`report-card ${selectedReport === i ? 'selected' : ''}`}
-                                                    onClick={() => setSelectedReport(selectedReport === i ? null : i)}
-                                                >
-                                                    <div className="report-header">
-                                                        <span style={{ fontWeight: 700 }}>{rpt.drug_name}</span>
-                                                        <span className={`badge ${getPriorityClass(rpt.risk_level)}`}>
-                                                            {rpt.risk_level}
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-sm text-secondary">{rpt.reaction_term}</div>
-                                                    {selectedReport === i && rpt.report_markdown && (
-                                                        <div className="report-content anim-fade-in" onClick={e => e.stopPropagation()}>
-                                                            <div className="report-actions flex justify-between items-center" style={{ marginBottom: '1rem' }}>
-                                                                <span className="badge badge-info text-xs">Formatted Markdown</span>
-                                                                <button
-                                                                    className="btn btn-sm btn-secondary"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        handleDownloadPdf(rpt, i);
-                                                                    }}
-                                                                >
-                                                                    Download PDF
-                                                                </button>
-                                                            </div>
-                                                            <div id={`report-pdf-content-${i}`} className="report-markdown-formatted">
-                                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                                    {rpt.report_markdown}
-                                                                </ReactMarkdown>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Welcome state */}
-                {status === 'idle' && (
-                    <div className="welcome-state anim-fade-in-up">
-                        <div className="welcome-content glass-card-static">
-                            <div className="welcome-icon anim-float">
+                {/* Messages */}
+                <div className="chat-messages-area">
+                    {messages.length === 0 && (
+                        <div className="chat-welcome anim-fade-in-up">
+                            <div className="chat-welcome-icon anim-float">
                                 <HiOutlineShieldCheck />
                             </div>
-                            <h2 className="heading-md">Welcome to PharmaVigil AI</h2>
-                            <p className="text-secondary" style={{ maxWidth: 480, margin: '0 auto', lineHeight: 1.7 }}>
-                                Start by typing a query above. You can scan for safety signals,
-                                investigate specific drugs, ask data questions, or request safety reports.
+                            <h2 className="heading-md" style={{ color: 'var(--text-bright)' }}>
+                                Welcome to <span className="gradient-text">PharmaVigil AI</span>
+                            </h2>
+                            <p className="text-secondary" style={{ maxWidth: 460, textAlign: 'center', lineHeight: 1.7 }}>
+                                Ask me to scan for drug safety signals, investigate specific drugs,
+                                query adverse event data, or generate regulatory-ready reports.
                             </p>
-                            <div className="welcome-suggestions">
-                                {QUERY_SUGGESTIONS.slice(0, 3).map((s, i) => (
+                            <div className="chat-welcome-chips">
+                                {QUERY_SUGGESTIONS.slice(0, 4).map((s, i) => (
                                     <button
                                         key={i}
-                                        className="welcome-suggestion glass-card"
-                                        onClick={() => setQuery(s)}
+                                        className="chat-welcome-chip glass-card"
+                                        onClick={() => { setInput(s); inputRef.current?.focus(); }}
                                     >
-                                        <FiZap style={{ color: 'var(--accent-primary)' }} />
                                         <span className="text-sm">{s}</span>
                                     </button>
                                 ))}
                             </div>
                         </div>
+                    )}
+
+                    {messages.map(msg => <ChatMessage key={msg.id} msg={msg} />)}
+
+                    {showTypingIndicator && <TypingMessage statusMessage={statusMessage} />}
+
+                    <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input */}
+                <div className="chat-input-area">
+                    <div className="chat-input-bar glass-card-static">
+                        <textarea
+                            ref={inputRef}
+                            className="chat-textarea"
+                            placeholder="Ask about drug safety signals, investigate a drug, or query data..."
+                            value={input}
+                            rows={1}
+                            onChange={e => {
+                                setInput(e.target.value);
+                                e.target.style.height = 'auto';
+                                e.target.style.height = Math.min(e.target.scrollHeight, 140) + 'px';
+                            }}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSend();
+                                }
+                            }}
+                            disabled={isProcessing}
+                        />
+                        <button
+                            className={`chat-send-btn ${input.trim() && !isProcessing ? 'active' : ''}`}
+                            onClick={handleSend}
+                            disabled={!input.trim() || isProcessing}
+                        >
+                            {isProcessing
+                                ? <span className="spinner spinner-sm" />
+                                : <FiSend />}
+                        </button>
                     </div>
-                )}
-            </main>
+                    <p className="chat-input-hint">
+                        <FiZap style={{ color: 'var(--accent-primary)', fontSize: '0.7rem' }} />
+                        Powered by Elastic Agent Builder · LangGraph · Groq &nbsp;·&nbsp;
+                        Press <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for new line
+                    </p>
+                </div>
+
+            </div>
         </div>
     );
 }
