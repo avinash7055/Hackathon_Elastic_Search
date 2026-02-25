@@ -32,6 +32,6 @@ Thumbs.db
 desktop.ini
 
 # ── Project ──────────────────────────────
-*.db
+
 pharma_vigil_checkpoints.db
 *.log

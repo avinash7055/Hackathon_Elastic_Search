@@ -64,6 +64,10 @@ class PharmaVigilState(TypedDict):
     started_at: str
     query: str  # Original user query / trigger
 
+    # Conversation history for follow-up support
+    # List of {"role": "user"|"ai", "content": "..."} from prior turns
+    conversation_history: list[dict]
+
     # Master Node routing
     route: str            # full_scan | investigate | report | data_query | general
     extracted_drug: str   # Drug name extracted from query (if any)

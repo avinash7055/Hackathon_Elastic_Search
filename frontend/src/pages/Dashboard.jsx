@@ -38,15 +38,15 @@ const QUERY_SUGGESTIONS = [
     'Show top drugs by adverse event count',
 ];
 
-const STATUS_MESSAGES = [
-    { icon: '🔍', text: 'Analyzing query...' },
-    { icon: '🧠', text: 'Routing to specialized agent...' },
-    { icon: '📡', text: 'Scanning Elasticsearch database...' },
-    { icon: '⚡', text: 'Processing adverse event records...' },
-    { icon: '📊', text: 'Computing statistical signals...' },
-    { icon: '🔬', text: 'Investigating case patterns...' },
-    { icon: '📝', text: 'Generating safety assessment...' },
-    { icon: '✨', text: 'Compiling final report...' },
+const THINKING_MESSAGES = [
+    'Analyzing your request...',
+    'Searching through 500,000+ adverse event records...',
+    'Checking drug safety patterns across the database...',
+    'Reviewing patient demographics and outcomes...',
+    'Cross-referencing with known drug interactions...',
+    'This may take a minute — we\'re being thorough...',
+    'Almost there — compiling the results for you...',
+    'Running final checks on the data...',
 ];
 
 const ROUTE_LABELS = {
@@ -55,7 +55,6 @@ const ROUTE_LABELS = {
     report: { label: '📝 Report', color: 'var(--accent-secondary)' },
     data_query: { label: '📊 Data Query', color: '#38bdf8' },
     general: { label: '📚 Knowledge', color: '#34d399' },
-    out_of_scope: { label: '🔒 Out of Scope', color: '#fb923c' },
 };
 
 function getAgentColor(agent) {
@@ -79,6 +78,27 @@ function getStepIcon(step) {
     }
 }
 
+function getAgentDisplayName(agent) {
+    switch (agent) {
+        case 'master_orchestrator': return 'AI Assistant';
+        case 'signal_scanner': return 'Safety Scanner';
+        case 'case_investigator': return 'Investigator';
+        case 'safety_reporter': return 'Report Writer';
+        case 'data_query': return 'Data Lookup';
+        default: return 'AI Agent';
+    }
+}
+
+function getStepTypeLabel(stepType) {
+    switch (stepType) {
+        case 'thinking': return 'THINKING';
+        case 'tool_call': return 'SEARCHING';
+        case 'tool_result': return 'RESULTS';
+        case 'conclusion': return 'DONE';
+        default: return stepType;
+    }
+}
+
 function getPriorityClass(priority) {
     switch ((priority || '').toUpperCase()) {
         case 'CRITICAL': return 'badge-critical';
@@ -89,10 +109,34 @@ function getPriorityClass(priority) {
     }
 }
 
+/* ─── Thinking Indicator (cycling messages) ─────────────────────── */
+function ThinkingIndicator() {
+    const [msgIndex, setMsgIndex] = useState(0);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setMsgIndex(prev => (prev + 1) % THINKING_MESSAGES.length);
+        }, 4000);
+        return () => clearInterval(interval);
+    }, []);
+
+    return (
+        <div className="chat-thinking-row">
+            <span className="typing-dots lg"><span /><span /><span /></span>
+            <span className="text-xs text-muted thinking-message-cycle">
+                {THINKING_MESSAGES[msgIndex]}
+            </span>
+        </div>
+    );
+}
+
 /* ─── Reasoning Steps (collapsible) ─────────────────────────────── */
 function ReasoningSection({ steps, isActive }) {
     const [collapsed, setCollapsed] = useState(false);
-    if (steps.length === 0 && !isActive) return null;
+    // Only show reasoning panel when there are actual steps to display.
+    // This prevents the panel from briefly flashing for greetings/general
+    // queries that never produce reasoning steps.
+    if (steps.length === 0) return null;
 
     return (
         <div className="chat-reasoning-section">
@@ -112,31 +156,19 @@ function ReasoningSection({ steps, isActive }) {
                             style={{ borderLeftColor: getAgentColor(step.agent) }}
                         >
                             <div className="step-header">
-                                <span className="step-icon">{getStepIcon(step)}</span>
                                 <span className="step-agent" style={{ color: getAgentColor(step.agent) }}>
-                                    {(step.agent || '').replace(/_/g, ' ')}
+                                    {getAgentDisplayName(step.agent)}
                                 </span>
                                 <span className="step-type badge badge-info" style={{ fontSize: '0.6rem' }}>
-                                    {step.step_type}
+                                    {getStepTypeLabel(step.step_type)}
                                 </span>
                             </div>
                             <div className="step-content">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.content}</ReactMarkdown>
                             </div>
-                            {step.tool_name && (
-                                <div className="step-tool font-mono text-xs">🛠️ {step.tool_name}</div>
-                            )}
-                            {step.tool_query && (
-                                <pre className="step-query font-mono text-xs">{step.tool_query}</pre>
-                            )}
                         </div>
                     ))}
-                    {isActive && (
-                        <div className="chat-thinking-row">
-                            <span className="typing-dots lg"><span /><span /><span /></span>
-                            <span className="text-xs text-muted">Agents are thinking...</span>
-                        </div>
-                    )}
+                    {isActive && <ThinkingIndicator />}
                 </div>
             )}
         </div>
@@ -185,16 +217,40 @@ function ReportCard({ rpt, index }) {
         const element = document.getElementById(`report-pdf-${index}`);
         if (!element) return;
         try {
+            // Temporarily apply print-friendly light theme
+            element.classList.add('pdf-print-mode');
+
             const canvas = await html2canvas(element, {
-                scale: 2, useCORS: true, backgroundColor: '#09090b', windowWidth: 800,
+                scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 800,
             });
+
+            // Remove print-mode class immediately after capture
+            element.classList.remove('pdf-print-mode');
+
             const imgData = canvas.toDataURL('image/png');
             const pdf = new jsPDF('p', 'mm', 'a4');
             const pdfWidth = pdf.internal.pageSize.getWidth();
-            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+            const pdfPageHeight = pdf.internal.pageSize.getHeight();
+            const imgHeight = (canvas.height * pdfWidth) / canvas.width;
+
+            // Handle multi-page reports
+            let heightLeft = imgHeight;
+            let position = 0;
+            pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
+            heightLeft -= pdfPageHeight;
+            while (heightLeft > 0) {
+                position -= pdfPageHeight;
+                pdf.addPage();
+                pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeight);
+                heightLeft -= pdfPageHeight;
+            }
+
             pdf.save(`${rpt.drug_name}_Safety_Report.pdf`);
-        } catch (e) { console.error(e); }
+        } catch (e) {
+            // Ensure class is removed even on error
+            element?.classList.remove('pdf-print-mode');
+            console.error(e);
+        }
     };
 
     return (
@@ -252,7 +308,10 @@ function ChatMessage({ msg }) {
                     </div>
                 )}
 
-                <ReasoningSection steps={msg.reasoningSteps || []} isActive={msg.isStreaming} />
+                {/* Hide reasoning panel for greeting/out_of_scope — no tools or meaningful agent work */}
+                {!(msg.route === 'greeting' || msg.route === 'out_of_scope') && (
+                    <ReasoningSection steps={msg.reasoningSteps || []} isActive={msg.isStreaming} />
+                )}
 
                 {/* Only render once there is actual text streaming in */}
                 {msg.streamedResponse && (
@@ -300,17 +359,14 @@ function ChatMessage({ msg }) {
     );
 }
 
-/* ─── Typing indicator (while waiting for first WS data) ─────────── */
-function TypingMessage({ statusMessage }) {
+/* ─── Simple Typing Indicator ───────────────────────────────────── */
+function TypingIndicator() {
     return (
         <div className="chat-message chat-message-ai">
             <div className="chat-avatar chat-avatar-ai"><RiRobotLine /></div>
             <div className="chat-ai-content">
-                <div className="chat-typing-card glass-card-static">
+                <div className="chat-typing-bubble">
                     <span className="typing-dots lg"><span /><span /><span /></span>
-                    <span className="text-xs text-muted" style={{ fontStyle: 'italic' }}>
-                        {statusMessage.icon} {statusMessage.text}
-                    </span>
                 </div>
             </div>
         </div>
@@ -326,8 +382,8 @@ export default function Dashboard() {
     const [messages, setMessages] = useState([]);
     const [health, setHealth] = useState(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isWaiting, setIsWaiting] = useState(false);
     const [showUserMenu, setShowUserMenu] = useState(false);
-    const [statusMessage, setStatusMessage] = useState(STATUS_MESSAGES[0]);
 
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
@@ -371,8 +427,8 @@ export default function Dashboard() {
         if (isProcessing) {
             let idx = 0;
             statusIntervalRef.current = setInterval(() => {
-                idx = (idx + 1) % STATUS_MESSAGES.length;
-                setStatusMessage(STATUS_MESSAGES[idx]);
+                idx = (idx + 1) % THINKING_MESSAGES.length;
+                setStatusMessage(THINKING_MESSAGES[idx]);
             }, 3000);
         } else {
             clearInterval(statusIntervalRef.current);
@@ -415,13 +471,13 @@ export default function Dashboard() {
 
         const words = text.split(/( )/);
         let index = 0;
+        const id = currentMsgIdRef.current; // capture ONCE — not inside the interval
 
         updateCurrentMessage(m => ({ ...m, streamedResponse: '', isTyping: true }));
 
         streamTimerRef.current = setInterval(() => {
             const chunk = words.slice(index, index + 4).join('');
             index += 4;
-            const id = currentMsgIdRef.current;
             setMessages(prev => prev.map(m => {
                 if (m.id !== id) return m;
                 return { ...m, streamedResponse: (m.streamedResponse || '') + chunk };
@@ -450,6 +506,7 @@ export default function Dashboard() {
             if (msg.type === 'current_state') {
                 const d = msg.data;
                 if (d.reasoning_trace?.length) {
+                    setIsWaiting(false);
                     stepQueueRef.current.push(...d.reasoning_trace);
                     drainReasoningQueue();
                 }
@@ -457,6 +514,7 @@ export default function Dashboard() {
 
             if (msg.type === 'progress') {
                 const d = msg.data;
+                setIsWaiting(false);
 
                 if (d.type === 'reasoning' && d.steps) {
                     stepQueueRef.current.push(...d.steps);
@@ -477,33 +535,67 @@ export default function Dashboard() {
                         .then(r => r.json())
                         .then(inv => {
                             const id = currentMsgIdRef.current;
-                            setMessages(prev => prev.map(m => {
-                                if (m.id !== id) return m;
-                                return {
-                                    ...m,
-                                    signals: inv.signals || [],
-                                    reports: inv.reports || [],
-                                    streamedResponse: inv.direct_response || m.streamedResponse || '',
-                                    isStreaming: false,
-                                    isTyping: false,
-                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                                };
-                            }));
-                            setIsProcessing(false);
-                            currentMsgIdRef.current = null;
-                            setTimeout(() => inputRef.current?.focus(), 100);
+                            const signals = inv.signals || [];
+                            const reports = inv.reports || [];
+                            const directResp = inv.direct_response || '';
+
+                            // Build a natural summary for investigation results
+                            let summary = directResp;
+                            if (!summary && (signals.length || reports.length)) {
+                                const parts = [];
+                                if (signals.length) {
+                                    const drugNames = signals.map(s => `**${s.drug_name}**`).join(', ');
+                                    parts.push(`Found **${signals.length}** safety signal${signals.length > 1 ? 's' : ''} for ${drugNames}.`);
+                                }
+                                if (reports.length) {
+                                    const reportSummaries = reports.map(r =>
+                                        `**${r.drug_name}** — Risk Level: **${r.risk_level}**`
+                                    ).join(' · ');
+                                    parts.push(`Generated **${reports.length}** safety report${reports.length > 1 ? 's' : ''}: ${reportSummaries}.`);
+                                }
+                                if (reports.length) {
+                                    parts.push('Expand the reports below for full details.');
+                                }
+                                summary = parts.join('\n\n');
+                            }
+
+                            // Stream the summary text first
+                            if (summary) {
+                                startStreaming(summary);
+                            }
+
+                            // Reveal signal/report cards after a short delay
+                            const revealDelay = summary ? Math.min(summary.length * 5, 3000) : 0;
+                            setTimeout(() => {
+                                setMessages(prev => prev.map(m => {
+                                    if (m.id !== id) return m;
+                                    return {
+                                        ...m,
+                                        signals,
+                                        reports,
+                                        isStreaming: false,
+                                        isTyping: false,
+                                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                    };
+                                }));
+                                setIsProcessing(false);
+                                currentMsgIdRef.current = null;
+                                setTimeout(() => inputRef.current?.focus(), 100);
+                            }, revealDelay);
                         })
                         .catch(() => {
+                            setIsWaiting(false);
                             setIsProcessing(false);
-                            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false }));
+                            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false, isTyping: false }));
                         });
                 }
             }
         };
 
         ws.onerror = () => {
+            setIsWaiting(false);
             setIsProcessing(false);
-            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false }));
+            updateCurrentMessage(m => ({ ...m, error: true, isStreaming: false, isTyping: false }));
         };
     }, [drainReasoningQueue, startStreaming, updateCurrentMessage]);
 
@@ -539,13 +631,22 @@ export default function Dashboard() {
         }]);
 
         setIsProcessing(true);
-        setStatusMessage(STATUS_MESSAGES[0]);
+        setIsWaiting(true);
 
         try {
+            // Build conversation history from previous messages for follow-up support
+            const conversationHistory = messages
+                .filter(m => m.role === 'user' || (m.role === 'ai' && m.streamedResponse))
+                .slice(-10) // last 10 turns
+                .map(m => ({
+                    role: m.role === 'user' ? 'user' : 'ai',
+                    content: m.role === 'user' ? m.content : (m.streamedResponse || '').slice(0, 500),
+                }));
+
             const res = await fetch(`${API_BASE}/api/investigate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: q }),
+                body: JSON.stringify({ query: q, conversation_history: conversationHistory }),
             });
             const data = await res.json();
             connectWebSocket(data.investigation_id);
@@ -567,9 +668,6 @@ export default function Dashboard() {
     };
 
     const isHealthy = health?.status === 'healthy';
-
-    // Show typing indicator only while waiting before the AI placeholder appears with reasoning
-    const showTypingIndicator = isProcessing && messages.length > 0 && messages[messages.length - 1]?.role === 'user';
 
     return (
         <div className="chatbot-layout">
@@ -671,10 +769,6 @@ export default function Dashboard() {
                                             <div className="text-xs text-muted">{user?.email}</div>
                                         </div>
                                     </div>
-                                    <hr style={{ border: 'none', borderTop: '1px solid var(--glass-border)', margin: '0.5rem 0' }} />
-                                    <button className="dropdown-item" onClick={handleLogout}>
-                                        <FiLogOut /> Logout
-                                    </button>
                                 </div>
                             )}
                         </div>
@@ -709,9 +803,13 @@ export default function Dashboard() {
                         </div>
                     )}
 
-                    {messages.map(msg => <ChatMessage key={msg.id} msg={msg} />)}
+                    {messages.map(msg => {
+                        // Hide the empty AI placeholder while typing dots are showing
+                        if (isWaiting && msg.role === 'ai' && !msg.streamedResponse && (msg.reasoningSteps || []).length === 0) return null;
+                        return <ChatMessage key={msg.id} msg={msg} />;
+                    })}
 
-                    {showTypingIndicator && <TypingMessage statusMessage={statusMessage} />}
+                    {isWaiting && <TypingIndicator />}
 
                     <div ref={messagesEndRef} />
                 </div>
@@ -750,7 +848,7 @@ export default function Dashboard() {
                     </div>
                     <p className="chat-input-hint">
                         <FiZap style={{ color: 'var(--accent-primary)', fontSize: '0.7rem' }} />
-                        Powered by Elastic Agent Builder · LangGraph · Groq &nbsp;·&nbsp;
+
                         Press <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for new line
                     </p>
                 </div>

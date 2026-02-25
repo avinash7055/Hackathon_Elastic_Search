@@ -16,14 +16,14 @@
   --bg-surface-hover: rgba(24, 24, 30, 0.85);
 
   /* Accent Colors */
-  --accent-primary: #f0b232;
-  --accent-primary-rgb: 240, 178, 50;
+  --accent-primary: #10b981;
+  --accent-primary-rgb: 16, 185, 129;
   --accent-secondary: #34d399;
   --accent-secondary-rgb: 52, 211, 153;
-  --accent-tertiary: #a78bfa;
-  --accent-tertiary-rgb: 167, 139, 250;
-  --accent-warning: #fb923c;
-  --accent-warning-rgb: 251, 146, 60;
+  --accent-tertiary: #6ee7b7;
+  --accent-tertiary-rgb: 110, 231, 183;
+  --accent-warning: #f59e0b;
+  --accent-warning-rgb: 245, 158, 11;
   --accent-danger: #f43f5e;
   --accent-danger-rgb: 244, 63, 94;
 
@@ -37,7 +37,7 @@
   --glass-bg: rgba(18, 18, 22, 0.65);
   --glass-bg-hover: rgba(26, 26, 32, 0.8);
   --glass-border: rgba(255, 255, 255, 0.07);
-  --glass-border-hover: rgba(240, 178, 50, 0.18);
+  --glass-border-hover: rgba(16, 185, 129, 0.2);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
   --glass-blur: blur(20px);
 
@@ -131,9 +131,9 @@ select {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse 80% 50% at 20% 80%, rgba(240, 178, 50, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse 60% 40% at 80% 20%, rgba(167, 139, 250, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse 90% 60% at 50% 50%, rgba(52, 211, 153, 0.025) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 50% at 20% 80%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 40% at 80% 20%, rgba(52, 211, 153, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse 90% 60% at 50% 50%, rgba(110, 231, 183, 0.025) 0%, transparent 60%),
     var(--bg-primary);
 }
 
@@ -164,7 +164,7 @@ select {
 .glass-card:hover {
   background: var(--glass-bg-hover);
   border-color: var(--glass-border-hover);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(240, 178, 50, 0.04);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(16, 185, 129, 0.07);
   transform: translateY(-2px);
 }
 
@@ -180,7 +180,7 @@ select {
 /* ── Gradient Text ───────────────────────────────────────────────── */
 
 .gradient-text {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-tertiary) 50%, var(--accent-secondary) 100%);
+  background: linear-gradient(130deg, #10b981 0%, #34d399 60%, #6ee7b7 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -211,13 +211,13 @@ select {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent-primary), #d49a1e);
-  color: var(--bg-primary);
-  box-shadow: 0 4px 20px rgba(var(--accent-primary-rgb), 0.25);
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ffffff;
+  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
 }
 
 .btn-primary:hover {
-  box-shadow: 0 6px 30px rgba(var(--accent-primary-rgb), 0.5);
+  box-shadow: 0 6px 30px rgba(16, 185, 129, 0.5);
   transform: translateY(-2px);
 }
 
@@ -231,7 +231,7 @@ select {
 
 .btn-secondary {
   background: linear-gradient(135deg, var(--accent-secondary), #10b981);
-  color: var(--bg-primary);
+  color: #ffffff;
   box-shadow: 0 4px 20px rgba(var(--accent-secondary-rgb), 0.25);
 }
 
@@ -332,9 +332,9 @@ select {
 }
 
 .badge-medium {
-  background: rgba(255, 235, 59, 0.15);
-  color: #ffeb3b;
-  border: 1px solid rgba(255, 235, 59, 0.3);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .badge-low {

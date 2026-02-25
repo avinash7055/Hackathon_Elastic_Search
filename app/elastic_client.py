@@ -37,7 +37,7 @@ class ElasticAgentClient:
                     "kbn-xsrf": "true",
                     "Content-Type": "application/json",
                 },
-                timeout=120.0,
+                timeout=300.0,  # 5 min — safety_reporter needs time for multi-tool reports
             )
         return self._client
 

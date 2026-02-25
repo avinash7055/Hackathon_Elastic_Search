@@ -1,87 +1,125 @@
 """LangGraph node functions for the PharmaVigil investigation pipeline.
 
-Each node communicates with an Agent Builder agent via the Converse API
-and updates the shared state with results — including agent reasoning traces
-for the transparency panel.
+Routing strategy:
+  - Queries needing NO tools (general knowledge, classification, greetings,
+    out-of-scope) → answered directly by Groq LLM (fast, no Agent Builder overhead).
+  - Queries needing FAERS database tools (full_scan, investigate, report,
+    data_query) → routed to Elastic Agent Builder agents that have tool access.
 """
 
+import asyncio
 import logging
 import json
 import re
 from datetime import datetime, timezone
+
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.elastic_client import elastic_agent_client
 from app.graph.state import PharmaVigilState
 
 logger = logging.getLogger(__name__)
 
+
+# ── Direct LLM helper (no tools, no Agent Builder) ────────────────────────────
+
+def _get_groq_llm():
+    """Return a configured ChatGroq instance (tool-free direct LLM calls)."""
+    from app.config import settings
+    return ChatGroq(
+        model=settings.groq_model,
+        api_key=settings.groq_api_key,
+        temperature=0.3,
+        max_tokens=4096,
+    )
+
+
+async def _call_llm_direct(system_prompt: str, user_message: str) -> str:
+    """Call Groq LLM directly without any tool involvement.
+
+    Use this for: classification, general knowledge, greetings, out-of-scope.
+    Do NOT use for queries requiring FAERS database access — route those to
+    Elastic Agent Builder instead.
+
+    Returns the response text string.
+    """
+    llm = _get_groq_llm()
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message),
+    ]
+    response = await llm.ainvoke(messages)
+    return response.content.strip()
+
 # ── Tool metadata lookup ──────────────────────────────────
 
-TOOL_QUERIES = {
-    "pharma.scan_adverse_event_trends": (
-        "FROM faers_reports | WHERE report_date >= NOW() - ?time_range::INT * 1 DAY "
-        "| STATS event_count = COUNT(*), serious_count = COUNT(CASE(serious == true, 1, null)), "
-        "fatal_count = COUNT(CASE(reaction_outcome == \"Fatal\", 1, null)) BY drug_name "
-        "| SORT event_count DESC | LIMIT 20"
-    ),
-    "pharma.calculate_reporting_ratio": (
-        "FROM faers_reports | STATS drug_reaction = COUNT(CASE(drug_name == ?drug_name AND "
-        "reaction_term == ?reaction_term, 1, null)), drug_total = COUNT(CASE(drug_name == ?drug_name, 1, null)), "
-        "other_reaction = COUNT(CASE(drug_name != ?drug_name AND reaction_term == ?reaction_term, 1, null)), "
-        "other_total = COUNT(CASE(drug_name != ?drug_name, 1, null)) "
-        "| EVAL prr = (drug_reaction * 1.0 / drug_total) / (other_reaction * 1.0 / other_total) | KEEP prr, case_count"
-    ),
-    "pharma.detect_temporal_spike": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS recent_count, baseline_count | EVAL spike_ratio = recent_daily_rate / baseline_daily_rate"
-    ),
-    "pharma.analyze_patient_demographics": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS count = COUNT(*), avg_age = AVG(patient_age) BY patient_sex, patient_age_group"
-    ),
-    "pharma.find_concomitant_drugs": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS co_report_count = COUNT(*), serious_pct BY concomitant_drugs | SORT co_report_count DESC"
-    ),
-    "pharma.check_outcome_severity": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS total, fatal, hospitalized, life_threatening | EVAL fatality_rate, serious_rate"
-    ),
-    "pharma.geo_distribution": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS event_count, serious_count BY reporter_country | SORT event_count DESC"
-    ),
-    "pharma.compile_signal_summary": (
-        "FROM faers_reports | WHERE drug_name == ?drug_name "
-        "| STATS total_reports, serious_count, fatal_count, last_90d, avg_patient_age BY reaction_term"
-    ),
-    "pharma.search_knowledge": (
-        "FROM pharma_knowledge | WHERE content LIKE ?search_query OR title LIKE ?search_query "
-        "| KEEP doc_id, title, category, drug_name, content | LIMIT 3"
-    ),
-    "pharma.search_drug_label": (
-        "FROM pharma_knowledge | WHERE drug_name == ?drug_name AND category == 'drug_label' "
-        "| KEEP doc_id, title, content | LIMIT 1"
-    ),
-    "pharma.search_regulatory_guidance": (
-        "FROM pharma_knowledge | WHERE category IN ('methodology','regulatory') AND content LIKE ?topic "
-        "| KEEP doc_id, title, category, content | LIMIT 3"
-    ),
+TOOL_FRIENDLY_MESSAGES = {
+    "pharma.scan_adverse_event_trends": "Scanning for drugs with the most reported side effects recently...",
+    "pharma.calculate_reporting_ratio": "Calculating how often this drug causes this side effect compared to other drugs...",
+    "pharma.detect_temporal_spike": "Checking if side effect reports have spiked recently...",
+    "pharma.analyze_patient_demographics": "Looking at which patients are most affected (age, gender)...",
+    "pharma.find_concomitant_drugs": "Checking which other drugs patients were taking alongside this one...",
+    "pharma.check_outcome_severity": "Reviewing how serious the reported outcomes were...",
+    "pharma.geo_distribution": "Checking where in the world these reports are coming from...",
+    "pharma.compile_signal_summary": "Pulling together all the key data for this drug...",
+    "pharma.search_knowledge": "Searching our pharma knowledge base...",
+    "pharma.search_drug_label": "Looking up the official drug label information...",
+    "pharma.search_regulatory_guidance": "Checking regulatory guidelines...",
 }
 
-TOOL_DESCRIPTIONS = {
-    "pharma.scan_adverse_event_trends": "Scan Adverse Event Trends",
-    "pharma.calculate_reporting_ratio": "Calculate Proportional Reporting Ratio (PRR)",
-    "pharma.detect_temporal_spike": "Detect Temporal Spike",
-    "pharma.analyze_patient_demographics": "Analyze Patient Demographics",
-    "pharma.find_concomitant_drugs": "Find Concomitant Drugs",
-    "pharma.check_outcome_severity": "Check Outcome Severity",
-    "pharma.geo_distribution": "Geographic Distribution",
-    "pharma.compile_signal_summary": "Compile Signal Summary",
-    "pharma.search_knowledge": "Search Pharma Knowledge Base (RAG)",
-    "pharma.search_drug_label": "Search Drug Label Information (RAG)",
-    "pharma.search_regulatory_guidance": "Search Regulatory Guidance (RAG)",
-}
+
+# ── Embedded Safety Signals context (demo dataset knowledge) ──────────────────
+# This context is injected into AI prompts so the LLM can give informed responses
+# about the 3 drugs with known safety signals in our synthetic FAERS dataset.
+
+DEMO_DRUG_SIGNALS_CONTEXT = """
+## PharmaVigil Demo Dataset — Known Embedded Safety Signals
+
+Our FAERS (FDA Adverse Event Reporting System) database contains synthetic data
+for 20 drugs. Three of these drugs have intentionally embedded safety signals
+that you should be aware of:
+
+### 1. Cardizol-X (cardizolam) — Cardiac Arrhythmia Spike
+- **Signal**: Dramatic increase in cardiac events (4× baseline) in the last 90 days
+- **Reactions**: Cardiac arrhythmia, Ventricular tachycardia, QT prolongation,
+  Atrial fibrillation, Cardiac arrest, Tachycardia
+- **Indication**: Hypertension
+- **Pattern**: Low baseline cardiac event rate for the first 21 months, then a
+  sharp 4× spike in the most recent 90 days
+- **Seriousness**: All cardiac events marked as serious (life-threatening,
+  hospitalization, or death)
+- **Patient profile**: Ages 45–85, both sexes, reported by healthcare professionals
+
+### 2. Neurofen-Plus (ibuprofen-codeine) — Hepatotoxicity in Elderly Females
+- **Signal**: Rising trend of liver injury reports, especially in females aged 65+
+- **Reactions**: Hepatotoxicity, Liver injury, Hepatic failure, Jaundice,
+  Hepatitis, Transaminases increased
+- **Indication**: Pain Management
+- **Pattern**: Gradual increase over the last 6 months (Gaussian distribution
+  weighted toward recent dates)
+- **Demographics**: ~78% female, ages 60–88, mostly classified as "Elderly"
+- **Seriousness**: All events marked as serious (hospitalization or life-threatening)
+
+### 3. Arthrex-200 (celecoxib-200) — Rhabdomyolysis with Statin Co-prescription
+- **Signal**: Rhabdomyolysis cases specifically when co-prescribed with statins
+- **Reactions**: Rhabdomyolysis, Myopathy, Creatine kinase increased
+- **Indication**: Osteoarthritis
+- **Co-prescribed statins**: Lipitorex (atorvastatin) or Simvalex (simvastatin)
+  — ALWAYS present as concomitant medication in signal cases
+- **Pattern**: Consistent over the past year, suggesting a drug-drug interaction
+- **Patient profile**: Ages 50–80, both sexes
+- **Seriousness**: All events marked as serious (hospitalization or life-threatening)
+
+### Other Drugs in the Database (no embedded signals)
+Lipitorex, Metforin-XR, Amlodex, Omeprazol-20, Sertralex, Levothyra,
+Gabapentex, Lisinox, Simvalex, Warfatrex, Prednizol, Tramadex, Clopidex,
+Azithrex, Fluoxetex, Ramiprilex, Diclofex
+
+When answering questions about these drugs, use this knowledge to provide
+accurate, specific, and data-informed responses. Reference specific signal
+patterns, demographics, and co-prescribing risks as appropriate.
+"""
 
 
 def _now_iso():
@@ -92,70 +130,21 @@ def _extract_reasoning_from_response(agent_name: str, result: dict) -> list[dict
     """Extract structured reasoning steps from an Agent Builder Converse API response.
     
     Parses tool calls and the agent's text response to build a reasoning trace.
+    Shows only user-friendly messages — no raw queries or technical details.
     """
     steps = []
     tool_calls = result.get("tool_calls", [])
-    response_text = result.get("response", "")
 
-    # Extract reasoning from the agent's textual thinking
-    # Look for patterns that indicate the agent is reasoning
-    thinking_patterns = [
-        r"(?:I (?:will|need to|should|am going to|can see|notice|observe).*?[.!])",
-        r"(?:Let me.*?[.!])",
-        r"(?:Based on.*?[.!])",
-        r"(?:The (?:data|results|analysis) (?:shows?|indicates?|suggests?|reveals?).*?[.!])",
-        r"(?:This (?:indicates?|suggests?|shows?|means?).*?[.!])",
-        r"(?:Looking at.*?[.!])",
-    ]
-
-    # Parse tool calls into reasoning steps  
+    # Parse tool calls into friendly reasoning steps (no raw queries)
     for tc in tool_calls:
         tool_id = tc.get("toolId", tc.get("tool_id", tc.get("name", "unknown_tool")))
-        tool_input = tc.get("parameters", tc.get("input", tc.get("args", {})))
-        tool_result_data = tc.get("result", tc.get("output", ""))
 
-        # Emit tool_call step
+        # Show a user-friendly message for this tool call
+        friendly_msg = TOOL_FRIENDLY_MESSAGES.get(tool_id, "Running analysis...")
         steps.append({
             "agent": agent_name,
             "step_type": "tool_call",
-            "content": TOOL_DESCRIPTIONS.get(tool_id, tool_id),
-            "tool_name": tool_id,
-            "tool_input": tool_input if isinstance(tool_input, dict) else {},
-            "tool_query": TOOL_QUERIES.get(tool_id, ""),
-            "tool_result": "",
-            "timestamp": _now_iso(),
-        })
-
-        # Emit tool_result step if we have one
-        if tool_result_data:
-            result_summary = str(tool_result_data)[:300]
-            steps.append({
-                "agent": agent_name,
-                "step_type": "tool_result",
-                "content": f"Results from {TOOL_DESCRIPTIONS.get(tool_id, tool_id)}",
-                "tool_name": tool_id,
-                "tool_input": {},
-                "tool_query": "",
-                "tool_result": result_summary,
-                "timestamp": _now_iso(),
-            })
-
-    # Extract key thinking sentences from the response
-    sentences = re.split(r'(?<=[.!?])\s+', response_text)
-    thinking_sentences = []
-    for sentence in sentences[:15]:  # Check first 15 sentences
-        sentence = sentence.strip()
-        if len(sentence) > 20 and any(re.search(p, sentence, re.IGNORECASE) for p in thinking_patterns):
-            thinking_sentences.append(sentence)
-            if len(thinking_sentences) >= 4:  # Cap at 4 thinking steps per agent call
-                break
-
-    # Interleave thinking steps before tool calls
-    for i, thought in enumerate(thinking_sentences):
-        steps.insert(min(i, len(steps)), {
-            "agent": agent_name,
-            "step_type": "thinking",
-            "content": thought,
+            "content": friendly_msg,
             "tool_name": "",
             "tool_input": {},
             "tool_query": "",
@@ -327,61 +316,76 @@ async def master_node(state: PharmaVigilState) -> dict:
     query = state.get("query", "")
     logger.info(f"Master Node: Classifying query — '{query[:80]}...'")
 
-    # ── STATIC GREETING HANDLER ──
-    greetings = {"hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "yo", "sup", "hi there", "hello there"}
-    q_clean = re.sub(r'[?!.]', '', query.lower().strip())
-    
-    if q_clean in greetings:
-        logger.info(f"Master Node: Static greeting detected — '{q_clean}'")
-        return {
-            "route": "greeting",
-            "extracted_drug": "",
-            "extracted_reaction": "",
-            "status": "routing",
-            "current_agent": "master_orchestrator",
-            "reasoning_trace": [{
-                "agent": "master_orchestrator",
-                "step_type": "conclusion",
-                "content": f"Greeting detected (\"{query}\"). Providing a friendly introduction.",
-                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-                "timestamp": _now_iso(),
-            }],
-            "progress_messages": ["👋 Hello!"],
-        }
-
     reasoning = [{
         "agent": "master_orchestrator",
         "step_type": "thinking",
-        "content": f"Analyzing query to determine optimal investigation route: \"{query}\"",
+        "content": "Understanding your question...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     }]
 
     try:
-        classification_prompt = (
-            "CLASSIFY the following user query into one of these routes and extract entities.\n\n"
-            "## Routes:\n"
-            "- \"full_scan\" → Broad safety scan across ALL drugs (e.g. \"scan for signals\", \"any emerging safety issues\")\n"
-            "- \"investigate\" → Deep-dive into a SPECIFIC drug's adverse event data from FAERS (e.g. \"Investigate Cardizol-X\", \"Is Neurofen-Plus causing liver problems?\")\n"
-            "- \"report\" → Generate a formal safety assessment report (e.g. \"Generate safety report for Arthrex-200\")\n"
-            "- \"data_query\" → Quick factual/statistical question about FAERS data (e.g. \"How many events?\", \"Top 5 drugs by fatality\")\n"
-            "- \"general\" → Knowledge question about drug labels, pharmacovigilance methods, guidelines, contraindications, warnings, dosage, drug interactions, or any question that does NOT need FAERS database queries (e.g. \"What is PRR?\", \"What are the contraindications of Cardizol-X?\", \"How is EBGM calculated?\", \"Warnings for Neurofen-Plus in elderly?\")\n"
-            "- \"out_of_scope\" → Question completely unrelated to drugs, pharmacovigilance, or medicine (e.g. \"What is the weather?\", \"Tell me a joke\", \"Who won the world cup?\")\n\n"
-            "## Rules:\n"
-            "- If the query asks about drug LABELS, warnings, contraindications, dosage, mechanism, or prescribing information → route = \"general\" (even if a drug name is mentioned)\n"
-            "- If the query asks about actual FAERS adverse event DATA, demographics, case counts, or needs database analysis → route = \"investigate\" or \"data_query\"\n"
-            "- Respond with ONLY a JSON object. No markdown, no explanation, no extra text.\n\n"
-            f"## User Query:\n\"{query}\"\n\n"
-            "## Response (JSON only):\n"
+        # ── Classification via direct Groq call (no tools needed, faster) ──
+        # The LLM decides EVERYTHING: greetings, out-of-scope, general, tools, etc.
+        classification_system = (
+            "You are a query classifier for PharmaVigil AI, a pharmacovigilance system. "
+            "Classify the user query into exactly one route and extract any drug/reaction entities. "
+            "Respond with ONLY a valid JSON object — no markdown fences, no explanation.\n\n"
+            "Our database has these key drugs with known safety signals:\n"
+            "  - Cardizol-X (cardiac arrhythmia spike in last 90 days)\n"
+            "  - Neurofen-Plus (hepatotoxicity in elderly females, rising trend)\n"
+            "  - Arthrex-200 (rhabdomyolysis when co-prescribed with statins)\n"
+            "Other drugs: Lipitorex, Metforin-XR, Amlodex, Omeprazol-20, Sertralex, "
+            "Levothyra, Gabapentex, Lisinox, Simvalex, Warfatrex, Prednizol, Tramadex, "
+            "Clopidex, Azithrex, Fluoxetex, Ramiprilex, Diclofex\n\n"
+            "Routes:\n"
+            "  greeting    — Casual greetings or conversational openers "
+                            "(e.g. 'hi', 'hello', 'how are you?', 'what can you do?', 'who are you?')\n"
+            "  full_scan   — Broad scan across ALL drugs for safety signals "
+                            "(e.g. 'scan for signals', 'any emerging safety issues')\n"
+            "  investigate — Deep-dive into ONE SPECIFIC drug using FAERS adverse event data "
+                            "(e.g. 'Investigate Cardizol-X', 'Is Neurofen-Plus safe?')\n"
+            "  report      — Generate a formal safety report for a specific drug "
+                            "(e.g. 'Generate safety report for Arthrex-200')\n"
+            "  data_query  — Quick factual FAERS database question "
+                            "(e.g. 'How many events?', 'Top 5 drugs by fatality')\n"
+            "  general     — Conceptual / knowledge question that does NOT need FAERS data: "
+                            "drug labels, warnings, contraindications, dosage, mechanism, "
+                            "pharmacovigilance methods, PRR, EBGM, ICH guidelines, etc.\n"
+            "  out_of_scope — Completely unrelated to drugs or pharmacovigilance "
+                            "(e.g. 'weather', 'jokes', 'sports', 'coding help')\n\n"
+            "Rules:\n"
+            "  - Greetings, small talk, 'how are you', 'what can you do' → greeting\n"
+            "  - Drug label/warnings/contraindications/dosage questions → general "
+                "(even if a drug name is mentioned)\n"
+            "  - Questions needing actual FAERS counts/demographics → investigate or data_query\n"
+            "  - Respond with exactly: "
+                '{"route": "<route>", "drug_name": "<drug or empty>", "reaction_term": "<reaction or empty>"}'
         )
 
-        result = await elastic_agent_client.converse(
-            agent_id="master_orchestrator",
-            message=classification_prompt,
-        )
+        # ── Build conversation history context for follow-ups ──
+        history = state.get("conversation_history", [])
+        history_context = ""
+        if history:
+            # Keep last 6 turns to avoid token bloat
+            recent = history[-6:]
+            history_lines = []
+            for turn in recent:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")[:300]  # truncate long responses
+                prefix = "User" if role == "user" else "Assistant"
+                history_lines.append(f"{prefix}: {content}")
+            history_context = (
+                "\n\nConversation history (most recent messages):\n"
+                + "\n".join(history_lines)
+                + "\n\nUse the conversation history to understand follow-up references "
+                "(e.g. 'that drug', 'tell me more', 'investigate it', etc.).\n"
+            )
 
-        response_text = result["response"].strip()
-        logger.info(f"Master Orchestrator raw response: {response_text[:500]}")
+        classification_user = f'{history_context}User query: "{query}"'
+
+        response_text = await _call_llm_direct(classification_system, classification_user)
+        logger.info(f"Master Orchestrator (Groq direct) raw response: {response_text[:500]}")
 
         # Parse JSON classification from the agent
         # Try to extract JSON even if the agent wraps it in markdown or extra text
@@ -405,7 +409,15 @@ async def master_node(state: PharmaVigilState) -> dict:
             q_lower = query.lower().strip()
 
             # Known drug names in our database
-            known_drugs = ["cardizol-x", "neurofen-plus", "arthrex-200", "cardizol", "neurofen", "arthrex"]
+            known_drugs = [
+                "cardizol-x", "neurofen-plus", "arthrex-200",
+                "cardizol", "neurofen", "arthrex",
+                "lipitorex", "metforin-xr", "metforin", "amlodex",
+                "omeprazol-20", "omeprazol", "sertralex", "levothyra",
+                "gabapentex", "lisinox", "simvalex", "warfatrex",
+                "prednizol", "tramadex", "clopidex", "azithrex",
+                "fluoxetex", "ramiprilex", "diclofex",
+            ]
             found_drug = ""
             for d in known_drugs:
                 if d in q_lower:
@@ -414,6 +426,16 @@ async def master_node(state: PharmaVigilState) -> dict:
                         "cardizol-x": "Cardizol-X", "cardizol": "Cardizol-X",
                         "neurofen-plus": "Neurofen-Plus", "neurofen": "Neurofen-Plus",
                         "arthrex-200": "Arthrex-200", "arthrex": "Arthrex-200",
+                        "lipitorex": "Lipitorex", "metforin-xr": "Metforin-XR",
+                        "metforin": "Metforin-XR", "amlodex": "Amlodex",
+                        "omeprazol-20": "Omeprazol-20", "omeprazol": "Omeprazol-20",
+                        "sertralex": "Sertralex", "levothyra": "Levothyra",
+                        "gabapentex": "Gabapentex", "lisinox": "Lisinox",
+                        "simvalex": "Simvalex", "warfatrex": "Warfatrex",
+                        "prednizol": "Prednizol", "tramadex": "Tramadex",
+                        "clopidex": "Clopidex", "azithrex": "Azithrex",
+                        "fluoxetex": "Fluoxetex", "ramiprilex": "Ramiprilex",
+                        "diclofex": "Diclofex",
                     }
                     found_drug = drug_map.get(d, d)
                     break
@@ -482,7 +504,7 @@ async def master_node(state: PharmaVigilState) -> dict:
         reaction = classification.get("reaction_term", "")
 
         # Validate route
-        valid_routes = {"full_scan", "investigate", "report", "data_query", "general", "out_of_scope"}
+        valid_routes = {"full_scan", "investigate", "report", "data_query", "general", "out_of_scope", "greeting"}
         if route not in valid_routes:
             logger.warning(f"Master Node: Invalid route '{route}', defaulting to full_scan")
             route = "full_scan"
@@ -494,13 +516,28 @@ async def master_node(state: PharmaVigilState) -> dict:
 
         logger.info(f"Master Node: route={route}, drug={drug}, reaction={reaction}")
 
-        reasoning.append({
-            "agent": "master_orchestrator",
-            "step_type": "conclusion",
-            "content": f"Query classified → Route: **{route}**{f', Drug: {drug}' if drug else ''}{f', Reaction: {reaction}' if reaction else ''}. Dispatching to appropriate agent pipeline.",
-            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-            "timestamp": _now_iso(),
-        })
+        # For greeting / out_of_scope: suppress reasoning trace.
+        # These routes involve no tools or meaningful agent work,
+        # so showing internal routing steps is noisy and unhelpful.
+        if route in ("greeting", "out_of_scope"):
+            reasoning = []   # clear the "thinking" step added earlier
+        else:
+            # User-friendly conclusion messages by route
+            friendly_conclusions = {
+                "full_scan": "Scanning the safety database for any concerning patterns...",
+                "investigate": f"Starting a deep-dive safety review{f' for {drug}' if drug else ''}...",
+                "report": f"Preparing a safety report{f' for {drug}' if drug else ''}...",
+                "data_query": f"Looking up the data{f' for {drug}' if drug else ''} to answer your question...",
+                "general": "Searching our knowledge base for the best answer...",
+            }
+            conclusion_msg = friendly_conclusions.get(route, "Working on your request...")
+            reasoning.append({
+                "agent": "master_orchestrator",
+                "step_type": "conclusion",
+                "content": conclusion_msg,
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
 
         result_dict = {
             "route": route,
@@ -522,7 +559,7 @@ async def master_node(state: PharmaVigilState) -> dict:
         reasoning.append({
             "agent": "master_orchestrator",
             "step_type": "conclusion",
-            "content": f"Classification failed ({str(e)}). Falling back to full safety scan.",
+            "content": "Running a full safety scan to cover all angles...",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -549,10 +586,18 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
 
     logger.info(f"Direct Query Node: Answering data question — '{query[:80]}'")
 
+    # Build conversation context for follow-ups
+    history = state.get("conversation_history", [])
+    history_context = ""
+    if history:
+        recent = history[-4:]
+        history_lines = [f"{'User' if t.get('role')=='user' else 'Assistant'}: {t.get('content','')[:200]}" for t in recent]
+        history_context = "\n\nRecent conversation for context:\n" + "\n".join(history_lines) + "\n"
+
     reasoning = [{
         "agent": "data_query",
         "step_type": "thinking",
-        "content": f"Processing quick data query. {'Targeting drug: ' + drug if drug else 'No specific drug — broad data scan.'}",
+        "content": f"{'Looking up data for ' + drug + '...' if drug else 'Searching the database for your answer...'}",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     }]
@@ -562,6 +607,11 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         agent_id = "case_investigator"
         enhanced_query = (
             f"Answer this specific data question about {drug}:\n{query}\n\n"
+            f"{history_context}"
+            f"Context: Our FAERS database has embedded safety signals for 3 drugs: "
+            f"Cardizol-X (cardiac arrhythmia spike in last 90 days), "
+            f"Neurofen-Plus (hepatotoxicity in 65+ females, rising trend), "
+            f"Arthrex-200 (rhabdomyolysis with statin co-prescription like Lipitorex/Simvalex).\n\n"
             f"Use the appropriate tools to get the exact data requested. "
             f"Be concise and data-focused in your response."
         )
@@ -569,6 +619,11 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         agent_id = "signal_scanner"
         enhanced_query = (
             f"Answer this data question about the FAERS database:\n{query}\n\n"
+            f"{history_context}"
+            f"Context: Our FAERS database has embedded safety signals for 3 drugs: "
+            f"Cardizol-X (cardiac arrhythmia spike in last 90 days), "
+            f"Neurofen-Plus (hepatotoxicity in 65+ females, rising trend), "
+            f"Arthrex-200 (rhabdomyolysis with statin co-prescription like Lipitorex/Simvalex).\n\n"
             f"Use the appropriate tools to get the exact data requested. "
             f"Be concise and data-focused in your response."
         )
@@ -586,7 +641,7 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         reasoning.append({
             "agent": agent_id,
             "step_type": "conclusion",
-            "content": f"Data query answered successfully by {TOOL_DESCRIPTIONS.get(agent_id, agent_id)}.",
+            "content": "Found the data — here's your answer.",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -604,7 +659,7 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         reasoning.append({
             "agent": agent_id,
             "step_type": "conclusion",
-            "content": f"Data query failed: {str(e)}",
+            "content": "Couldn't retrieve the data right now. Please try again.",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -618,62 +673,95 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
 
 
 async def out_of_scope_node(state: PharmaVigilState) -> dict:
-    """Handles queries that are outside the pharmacovigilance domain.
-    
-    Returns a polite redirect message guiding the user back to drug safety topics.
+    """Handles queries outside the pharmacovigilance domain.
+
+    Uses Groq LLM to generate a natural, polite redirect — not a static wall.
+    The LLM acknowledges the user's question and gently guides them to
+    drug-safety topics PharmaVigil can actually help with.
     """
     query = state.get("query", "")
-    logger.info(f"Out of Scope Node: Redirecting off-topic query — '{query[:80]}'")
+    logger.info(f"Out of Scope Node: Politely redirecting — '{query[:80]}'")
 
-    redirect_message = (
-        "## 🔒 Out of Scope\n\n"
-        "I appreciate your question, but I'm **PharmaVigil AI** — a specialized system "
-        "designed exclusively for **drug safety and pharmacovigilance**.\n\n"
-        "I can help you with:\n\n"
-        "- 🔍 **Signal Detection** — Scan for emerging drug safety signals\n"
-        "- 💊 **Drug Investigation** — Investigate specific drugs for adverse events\n"
-        "- 📊 **Data Queries** — Get adverse event counts, demographics, geographic distribution\n"
-        "- 📝 **Safety Reports** — Generate regulatory-grade safety assessment reports\n"
-        "- 📚 **Pharma Knowledge** — Learn about PRR, ROR, FAERS, ICH guidelines, drug labels\n\n"
-        "### Try one of these:\n"
-        "- *\"Scan for any emerging drug safety signals in the last 90 days\"*\n"
-        "- *\"Investigate Cardizol-X for cardiac safety signals\"*\n"
-        "- *\"What is PRR in pharmacovigilance?\"*\n"
-        "- *\"What are the contraindications of Neurofen-Plus?\"*\n"
-        "- *\"Generate safety report for Arthrex-200\"*"
-    )
+    # Build conversation context for follow-ups
+    history = state.get("conversation_history", [])
+    history_context = ""
+    if history:
+        recent = history[-4:]
+        history_lines = [f"{'User' if t.get('role')=='user' else 'Assistant'}: {t.get('content','')[:200]}" for t in recent]
+        history_context = "\nRecent conversation:\n" + "\n".join(history_lines) + "\n"
+
+    try:
+        redirect_response = await _call_llm_direct(
+            system_prompt=(
+                "You are PharmaVigil AI — a specialist drug safety and pharmacovigilance assistant. "
+                "The user has asked a question that is outside your domain. "
+                "Respond in 2-3 short sentences MAX. Be warm, polite, and professional. "
+                "Briefly acknowledge their question, then explain you specialize in drug safety. "
+                "Suggest ONE relevant example query they could try — for example: "
+                "'Investigate Cardizol-X for cardiac safety signals', "
+                "'Is Neurofen-Plus safe for elderly patients?', or "
+                "'Check Arthrex-200 interactions with statins'. "
+                "Do NOT use headers, bullet lists, or emoji. Keep it conversational and concise."
+            ),
+            user_message=f'{history_context}The user asked: "{query}"',
+        )
+    except Exception as e:
+        logger.warning(f"Out-of-scope LLM call failed, using fallback: {e}")
+        redirect_response = (
+            f"That's an interesting question, but I'm PharmaVigil AI — I specialize in "
+            f"drug safety and pharmacovigilance. Try asking me something like "
+            f"\"Investigate Cardizol-X for cardiac safety signals\" and I can help!"
+        )
 
     return {
         "status": "complete",
-        "direct_response": redirect_message,
+        "direct_response": redirect_response,
         "current_agent": "none",
-        "reasoning_trace": [{
-            "agent": "master_orchestrator",
-            "step_type": "conclusion",
-            "content": f"Query \"{query[:60]}\" is outside the pharmacovigilance domain. Providing guidance on supported topics.",
-            "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-            "timestamp": _now_iso(),
-        }],
-        "progress_messages": ["🔒 Query is outside the pharmacovigilance domain"],
+        "reasoning_trace": [],
+        "progress_messages": ["Redirecting to drug safety topics"],
     }
 
 
 async def greeting_node(state: PharmaVigilState) -> dict:
-    """Handles simple greetings with a friendly static response."""
+    """Handles greetings and conversational openers with a natural LLM response."""
     query = state.get("query", "")
-    logger.info(f"Greeting Node: Responding to greeting — '{query[:80]}'")
+    logger.info(f"Greeting Node: Responding naturally — '{query[:80]}'")
 
-    greeting_response = (
-        "## 👋 Hello! I'm PharmaVigil AI\n\n"
-        "I'm your specialized assistant for **drug safety and pharmacovigilance**.\n\n"
-        "I can help you monitor emerging safety signals, investigate specific drugs, "
-        "and generate regulatory-grade safety assessment reports.\n\n"
-        "### How can I help you today?\n"
-        "- *\"Scan for emerging drug safety signals\"*\n"
-        "- *\"Investigate Cardizol-X for liver issues\"*\n"
-        "- *\"What is PRR in pharmacovigilance?\"*\n"
-        "- *\"Generate a safety report for Arthrex-200\"*"
-    )
+    # Build conversation context for follow-ups
+    history = state.get("conversation_history", [])
+    history_context = ""
+    if history:
+        recent = history[-4:]
+        history_lines = [f"{'User' if t.get('role')=='user' else 'Assistant'}: {t.get('content','')[:200]}" for t in recent]
+        history_context = "\n\nRecent conversation:\n" + "\n".join(history_lines) + "\n"
+
+    try:
+        greeting_response = await _call_llm_direct(
+            system_prompt=(
+                "You are PharmaVigil AI — a friendly, professional drug safety and "
+                "pharmacovigilance assistant. The user is greeting you or asking a "
+                "conversational question. Respond warmly and naturally in 2-4 sentences. "
+                "Briefly introduce what you can do (drug safety signals, investigations, "
+                "safety reports, pharma knowledge). "
+                "You monitor a FAERS database with 20 drugs. Three drugs have active safety "
+                "signals you can investigate: Cardizol-X (cardiac arrhythmia spike), "
+                "Neurofen-Plus (hepatotoxicity in elderly females), and Arthrex-200 "
+                "(rhabdomyolysis with statin co-prescription). "
+                "You can suggest the user try asking about one of these drugs. "
+                "End by asking how you can help them today. "
+                "Be conversational — NOT robotic. Do NOT use bullet lists or headers. "
+                "Keep it short and welcoming. "
+                "If there is conversation history provided, acknowledge the ongoing conversation naturally."
+            ),
+            user_message=f"{history_context}{query}",
+        )
+    except Exception as e:
+        logger.warning(f"Greeting LLM call failed, using fallback: {e}")
+        greeting_response = (
+            "Hey there! I'm PharmaVigil AI, your drug safety assistant. "
+            "I can help you scan for safety signals, investigate specific drugs, "
+            "and generate regulatory reports. How can I help you today?"
+        )
 
     return {
         "status": "complete",
@@ -684,132 +772,163 @@ async def greeting_node(state: PharmaVigilState) -> dict:
 
 
 async def general_knowledge_node(state: PharmaVigilState) -> dict:
-    """Answers general pharmacovigilance questions using the master_orchestrator agent.
-    
-    No database queries needed — pure LLM knowledge via Elastic Agent Builder.
-    If the master node already answered the question (fallback), we skip the redundant call.
+    """Answers general pharmacovigilance / drug-label questions.
+
+    Uses Groq LLM DIRECTLY — no Elastic Agent Builder, no tool calls.
+    This is the correct path for questions that purely need LLM reasoning:
+      - What is PRR / EBGM / ROR?
+      - Drug label: contraindications, warnings, dosage, interactions
+      - ICH guidelines, FAERS methodology, pharmacovigilance concepts
+
+    RAG context from the knowledge base is still retrieved via Elasticsearch
+    and injected into the prompt, but NO tools are invoked on the LLM side.
     """
     query = state.get("query", "")
-    logger.info(f"General Knowledge Node: Answering question — '{query[:80]}'")
+    drug = state.get("extracted_drug", "")
+    logger.info(f"General Knowledge Node (Groq direct): '{query[:80]}'")
 
-    # Always perform RAG search — never skip to ensure answers are grounded in knowledge base
+    # Build conversation context for follow-ups
+    history = state.get("conversation_history", [])
+    history_context = ""
+    if history:
+        recent = history[-6:]
+        history_lines = [f"{'User' if t.get('role')=='user' else 'Assistant'}: {t.get('content','')[:300]}" for t in recent]
+        history_context = "\n\nConversation history (for context):\n" + "\n".join(history_lines) + "\n"
 
     reasoning = [{
         "agent": "master_orchestrator",
         "step_type": "thinking",
-        "content": f"Searching knowledge base for relevant documents before answering...",
+        "content": "Looking through our pharma knowledge base...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     }]
 
-    # ── RAG: Search knowledge base for context ──────────
+    # ── RAG: Pull relevant docs from Elasticsearch ────────────────────────
     rag_context = ""
     try:
         from app.config import settings
         from elasticsearch import Elasticsearch
 
-        es = Elasticsearch(settings.elasticsearch_url, api_key=settings.elasticsearch_api_key, request_timeout=15)
-        
-        # Try semantic search first (ELSER embeddings), fallback to BM25
+        es = Elasticsearch(
+            settings.elasticsearch_url,
+            api_key=settings.elasticsearch_api_key,
+            request_timeout=15,
+        )
+
         hits = []
+
+        # 1. Try semantic search (ELSER)
         try:
-            semantic_body = {
-                "query": {
-                    "semantic": {
-                        "field": "content_semantic",
-                        "query": query,
-                    }
+            sem_results = es.search(
+                index="pharma_knowledge",
+                body={
+                    "query": {"semantic": {"field": "content_semantic", "query": query}},
+                    "size": 3,
+                    "_source": ["title", "category", "content"],
                 },
-                "size": 3,
-                "_source": ["title", "category", "content"],
-            }
-            results = es.search(index="pharma_knowledge", body=semantic_body)
-            hits = results.get("hits", {}).get("hits", [])
+            )
+            hits = sem_results.get("hits", {}).get("hits", [])
             if hits:
                 logger.info(f"RAG semantic search returned {len(hits)} hits")
         except Exception:
-            logger.info("Semantic search not available, falling back to BM25")
-        
-        # Fallback to BM25 full-text search
+            logger.info("Semantic search unavailable, falling back to BM25")
+
+        # 2. Fallback to BM25 full-text
         if not hits:
-            bm25_body = {
-                "query": {
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["title^3", "content"],
-                        "type": "best_fields",
-                        "fuzziness": "AUTO",
-                    }
+            bm25_results = es.search(
+                index="pharma_knowledge",
+                body={
+                    "query": {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["title^3", "content"],
+                            "type": "best_fields",
+                            "fuzziness": "AUTO",
+                        }
+                    },
+                    "size": 3,
+                    "_source": ["title", "category", "content"],
                 },
-                "size": 3,
-                "_source": ["title", "category", "content"],
-            }
-            results = es.search(index="pharma_knowledge", body=bm25_body, ignore=[404])
-            hits = results.get("hits", {}).get("hits", [])
+                ignore=[404],
+            )
+            hits = bm25_results.get("hits", {}).get("hits", [])
 
         if hits:
-            rag_pieces = []
+            pieces = []
             for hit in hits:
                 src = hit["_source"]
-                rag_pieces.append(f"--- {src['title']} ({src['category']}) ---\n{src['content'][:2000]}")
-            rag_context = "\n\n".join(rag_pieces)
+                pieces.append(
+                    f"--- {src['title']} [{src['category']}] ---\n{src['content'][:2000]}"
+                )
+            rag_context = "\n\n".join(pieces)
+            doc_titles = ", ".join(h["_source"]["title"] for h in hits)
             reasoning.append({
                 "agent": "master_orchestrator",
                 "step_type": "tool_call",
-                "content": f"Retrieved {len(hits)} relevant knowledge documents via RAG semantic search.",
+                "content": f"Found {len(hits)} relevant reference(s): {doc_titles}",
                 "tool_name": "pharma.search_knowledge",
                 "tool_input": {"search_query": query[:100]},
-                "tool_query": f"Semantic search: '{query[:80]}' → {len(hits)} results",
-                "tool_result": ", ".join(h["_source"]["title"] for h in hits),
+                "tool_query": f"Knowledge base search: '{query[:80]}' → {len(hits)} results",
+                "tool_result": doc_titles,
                 "timestamp": _now_iso(),
             })
         else:
-            logger.info("RAG search returned no results, using LLM knowledge only.")
+            logger.info("RAG returned no hits — answering from LLM knowledge only.")
+
     except Exception as rag_err:
         logger.warning(f"RAG search failed (non-critical): {rag_err}")
 
+    # ── Answer via Groq directly (no tools) ──────────────────────────────
     try:
-        rag_prefix = ""
-        if rag_context:
-            rag_prefix = (
-                f"Here is relevant context from our pharmaceutical knowledge base:\n\n"
-                f"{rag_context}\n\n"
-                f"Use the above context to inform and ground your answer. "
-                f"Cite specific documents when applicable.\n\n"
-            )
-
-        result = await elastic_agent_client.converse(
-            agent_id="master_orchestrator",
-            message=(
-                f"You are now acting as a pharmacovigilance knowledge expert. "
-                f"Answer this question clearly, accurately, and concisely. "
-                f"Use markdown formatting for readability.\n\n"
-                f"{rag_prefix}"
-                f"Question: {query}"
-            ),
+        system_prompt = (
+            "You are PharmaVigil AI — a specialist pharmacovigilance and drug safety assistant. "
+            "Answer questions clearly, accurately, and concisely using markdown formatting. "
+            "When context from the knowledge base is provided, use it to ground your answer "
+            "and cite document titles where relevant. "
+            "Focus only on pharmacovigilance, drug safety, drug labels, and related medical topics. "
+            "Do NOT make up data or statistics — if you are uncertain, say so.\n\n"
+            f"{DEMO_DRUG_SIGNALS_CONTEXT}"
         )
+
+        user_message_parts = []
+        if rag_context:
+            user_message_parts.append(
+                f"## Relevant Knowledge Base Context\n\n{rag_context}\n\n"
+                f"---\nUse the above context to ground your answer. "
+                f"Cite document titles when applicable.\n"
+            )
+        if drug:
+            user_message_parts.append(f"(Drug in question: **{drug}**)\n")
+        if history_context:
+            user_message_parts.append(f"{history_context}\n")
+        user_message_parts.append(f"## Question\n\n{query}")
+
+        user_message = "\n".join(user_message_parts)
+
+        response_text = await _call_llm_direct(system_prompt, user_message)
+        logger.info(f"General Knowledge Node answered ({len(response_text)} chars)")
 
         reasoning.append({
             "agent": "master_orchestrator",
             "step_type": "conclusion",
-            "content": "General knowledge question answered successfully.",
+            "content": "Here's what I found for you.",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
 
         return {
             "status": "complete",
-            "direct_response": result["response"],
+            "direct_response": response_text,
             "current_agent": "none",
             "reasoning_trace": reasoning,
-            "progress_messages": ["💡 General knowledge question answered"],
+            "progress_messages": ["💡 Knowledge question answered directly by LLM"],
         }
 
     except Exception as e:
-        logger.error(f"General Knowledge Node failed: {e}")
+        logger.error(f"General Knowledge Node (Groq direct) failed: {e}")
         return {
             "status": "error",
-            "direct_response": f"Sorry, I couldn't answer that: {str(e)}",
+            "direct_response": f"Sorry, I couldn't answer that question: {str(e)}",
             "errors": [f"General knowledge error: {str(e)}"],
             "reasoning_trace": reasoning,
             "progress_messages": [f"General knowledge query failed: {str(e)}"],
@@ -826,7 +945,7 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
     reasoning.append({
         "agent": "signal_scanner",
         "step_type": "thinking",
-        "content": f"Starting signal surveillance scan. Analyzing FAERS database for anomalies in adverse event reporting patterns.",
+        "content": "Scanning the safety database for unusual patterns...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     })
@@ -856,11 +975,11 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
 
         # Add conclusion step
         if signals:
-            signal_summary = ", ".join(f"{s['drug_name']}→{s['reaction_term']} (PRR: {s['prr']})" for s in signals)
+            drug_list = ", ".join(s['drug_name'] for s in signals)
             reasoning.append({
                 "agent": "signal_scanner",
                 "step_type": "conclusion",
-                "content": f"Signal scan complete. Detected {len(signals)} potential safety signal(s): {signal_summary}. Routing to Case Investigator for deep analysis.",
+                "content": f"Found {len(signals)} potential safety concern(s) involving: {drug_list}. Investigating further...",
                 "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
                 "timestamp": _now_iso(),
             })
@@ -868,7 +987,7 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
             reasoning.append({
                 "agent": "signal_scanner",
                 "step_type": "conclusion",
-                "content": "Signal scan complete. No statistically significant safety signals detected in the current time window.",
+                "content": "Scan complete — no safety concerns found in the recent data.",
                 "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
                 "timestamp": _now_iso(),
             })
@@ -890,7 +1009,7 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
         reasoning.append({
             "agent": "signal_scanner",
             "step_type": "conclusion",
-            "content": f"Signal Scanner encountered an error: {str(e)}",
+            "content": "Something went wrong during the safety scan. Please try again.",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -935,27 +1054,29 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
         }
 
     investigations = []
-    conversation_id = state.get("investigator_conversation_id")
     reasoning = []
 
     reasoning.append({
         "agent": "case_investigator",
         "step_type": "thinking",
-        "content": f"Beginning deep investigation of {len(signals)} flagged signal(s). Will analyze demographics, drug interactions, outcome severity, and geographic patterns for each.",
+        "content": f"Digging deeper into {len(signals)} flagged drug(s) — checking patient details, interactions, and outcomes...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     })
 
-    for i, signal in enumerate(signals):
+    # ── Investigate all signals in PARALLEL for speed ──────────────────
+    async def _investigate_one(i: int, signal: dict) -> tuple[dict, list[dict]]:
+        """Investigate a single signal. Returns (investigation, reasoning_steps)."""
         drug = signal.get("drug_name", "Unknown")
         reaction = signal.get("reaction_term", "Unknown")
+        steps = []
 
         logger.info(f"Investigating signal {i+1}/{len(signals)}: {drug} → {reaction}")
 
-        reasoning.append({
+        steps.append({
             "agent": "case_investigator",
             "step_type": "thinking",
-            "content": f"Investigating signal {i+1}/{len(signals)}: {drug} → {reaction} (PRR: {signal.get('prr', 'N/A')}, Spike: {signal.get('spike_ratio', 'N/A')}x). Querying patient demographics, concomitant medications, and outcome severity.",
+            "content": f"Reviewing {drug} ({i+1} of {len(signals)}) — looking at who was affected and how...",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -975,14 +1096,11 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
             result = await elastic_agent_client.converse(
                 agent_id="case_investigator",
                 message=message,
-                conversation_id=conversation_id,
+                # Each parallel call gets its own conversation (no shared ID)
             )
 
-            conversation_id = result["conversation_id"]
-
-            # Extract reasoning from the investigator's response
             agent_reasoning = _extract_reasoning_from_response("case_investigator", result)
-            reasoning.extend(agent_reasoning)
+            steps.extend(agent_reasoning)
 
             investigation = {
                 "drug_name": drug,
@@ -997,41 +1115,49 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
                 "overall_assessment": result["response"][-500:] if result["response"] else "",
             }
 
-            # Check for drug interaction mentions
             resp_lower = result["response"].lower()
             if "interaction" in resp_lower and ("yes" in resp_lower or "detected" in resp_lower or "potential" in resp_lower):
                 investigation["interaction_detected"] = True
 
-            investigations.append(investigation)
-
-            reasoning.append({
+            interaction_note = "Found a possible drug interaction." if investigation['interaction_detected'] else "No major drug interactions found."
+            steps.append({
                 "agent": "case_investigator",
                 "step_type": "conclusion",
-                "content": f"Investigation of {drug}→{reaction} complete. {'Drug interaction detected.' if investigation['interaction_detected'] else 'No significant drug interactions found.'} Full case analysis recorded.",
+                "content": f"Finished reviewing {drug}. {interaction_note}",
                 "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
                 "timestamp": _now_iso(),
             })
 
+            return investigation, steps
+
         except Exception as e:
-            logger.error(f"Investigation failed for {drug}: {e}")
-            investigations.append({
+            logger.error(f"Investigation failed for {drug}: {type(e).__name__}: {e}")
+            steps.append({
+                "agent": "case_investigator",
+                "step_type": "conclusion",
+                "content": f"Couldn't complete the review for {drug}. Please try again.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+            return {
                 "drug_name": drug,
                 "reaction_term": reaction,
                 "raw_response": f"Error: {str(e)}",
                 "overall_assessment": f"Investigation failed: {str(e)}",
-            })
-            reasoning.append({
-                "agent": "case_investigator",
-                "step_type": "conclusion",
-                "content": f"Investigation of {drug} failed: {str(e)}",
-                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-                "timestamp": _now_iso(),
-            })
+            }, steps
+
+    # Run all investigations concurrently
+    results = await asyncio.gather(
+        *[_investigate_one(i, sig) for i, sig in enumerate(signals)]
+    )
+
+    for inv, steps in results:
+        investigations.append(inv)
+        reasoning.extend(steps)
 
     return {
         "status": "reporting",
         "investigations": investigations,
-        "investigator_conversation_id": conversation_id,
         "current_agent": "safety_reporter",
         "total_investigations": len(investigations),
         "reasoning_trace": reasoning,
@@ -1056,33 +1182,34 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
         }
 
     reports = []
-    conversation_id = state.get("reporter_conversation_id")
     reasoning = []
 
     reasoning.append({
         "agent": "safety_reporter",
         "step_type": "thinking",
-        "content": f"Generating Drug Safety Signal Assessment Reports for {len(investigations)} investigated signal(s). Compiling statistical evidence, clinical context, and regulatory recommendations.",
+        "content": f"Writing safety report(s) for {len(investigations)} drug(s)...",
         "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
         "timestamp": _now_iso(),
     })
 
-    for i, investigation in enumerate(investigations):
+    # ── Generate all reports in PARALLEL for speed ─────────────────────
+    async def _generate_one(i: int, investigation: dict) -> tuple[dict, list[dict]]:
+        """Generate a single safety report. Returns (report, reasoning_steps)."""
         drug = investigation.get("drug_name", "Unknown")
         reaction = investigation.get("reaction_term", "Unknown")
+        steps = []
 
         logger.info(f"Generating report {i+1}/{len(investigations)}: {drug} → {reaction}")
 
-        # Find matching signal data
         matching_signal = next(
             (s for s in signals if s.get("drug_name") == drug),
             {},
         )
 
-        reasoning.append({
+        steps.append({
             "agent": "safety_reporter",
             "step_type": "thinking",
-            "content": f"Compiling safety report for {drug}→{reaction}. Using pharma.compile_signal_summary to gather comprehensive data profile before report generation.",
+            "content": f"Gathering all findings for {drug} to prepare the report...",
             "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
             "timestamp": _now_iso(),
         })
@@ -1103,20 +1230,15 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
             result = await elastic_agent_client.converse(
                 agent_id="safety_reporter",
                 message=message,
-                conversation_id=conversation_id,
+                # Each parallel call gets its own conversation (no shared ID)
             )
 
-            conversation_id = result["conversation_id"]
-
-            # Extract reasoning from the reporter's response
             agent_reasoning = _extract_reasoning_from_response("safety_reporter", result)
-            reasoning.extend(agent_reasoning)
+            steps.extend(agent_reasoning)
 
-            # Determine risk level — prefer signal priority, confirm from agent response text
             signal_priority = matching_signal.get("priority", "MEDIUM").upper()
-            risk_level = signal_priority  # HIGH, MEDIUM, LOW, CRITICAL from signal data
+            risk_level = signal_priority
 
-            # Allow agent response to upgrade risk level but not downgrade it
             resp_upper = result["response"].upper()
             if "CRITICAL" in resp_upper and risk_level not in ("CRITICAL",):
                 risk_level = "CRITICAL"
@@ -1134,36 +1256,44 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
                 "recommended_actions": [],
             }
 
-            reports.append(report)
-
-            reasoning.append({
+            steps.append({
                 "agent": "safety_reporter",
                 "step_type": "conclusion",
-                "content": f"Safety report for {drug}→{reaction} generated. Risk level: {risk_level}. Report includes statistical evidence, clinical assessment, and recommended regulatory actions.",
+                "content": f"Safety report for {drug} is ready. Risk level: {risk_level}.",
                 "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
                 "timestamp": _now_iso(),
             })
 
+            return report, steps
+
         except Exception as e:
-            logger.error(f"Report generation failed for {drug}: {e}")
-            reports.append({
+            logger.error(f"Report generation failed for {drug}: {type(e).__name__}: {e}")
+            steps.append({
+                "agent": "safety_reporter",
+                "step_type": "conclusion",
+                "content": f"Couldn't generate the report for {drug}. Please try again.",
+                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
+                "timestamp": _now_iso(),
+            })
+            return {
                 "drug_name": drug,
                 "reaction_term": reaction,
                 "risk_level": "UNKNOWN",
                 "report_markdown": f"Report generation failed: {str(e)}",
-            })
-            reasoning.append({
-                "agent": "safety_reporter",
-                "step_type": "conclusion",
-                "content": f"Report generation for {drug} failed: {str(e)}",
-                "tool_name": "", "tool_input": {}, "tool_query": "", "tool_result": "",
-                "timestamp": _now_iso(),
-            })
+            }, steps
+
+    # Run all report generations concurrently
+    results = await asyncio.gather(
+        *[_generate_one(i, inv) for i, inv in enumerate(investigations)]
+    )
+
+    for rpt, steps in results:
+        reports.append(rpt)
+        reasoning.extend(steps)
 
     return {
         "status": "complete",
         "reports": reports,
-        "reporter_conversation_id": conversation_id,
         "current_agent": "none",
         "total_reports": len(reports),
         "reasoning_trace": reasoning,

@@ -42,7 +42,7 @@ def route_after_master(state: PharmaVigilState) -> str:
     elif route == "investigate":
         return "investigate_cases"
     elif route == "report":
-        return "generate_reports"
+        return "investigate_cases"  # investigate first, then auto-flows to reporter
     elif route == "data_query":
         return "direct_query"
     elif route == "general":
@@ -137,6 +137,7 @@ async def create_runnable():
 async def run_investigation(
     query: str = "Scan for any emerging drug safety signals in the FAERS database from the last 90 days. Look for drugs with unusual spikes in adverse event reporting, particularly for serious reactions like cardiac events, hepatotoxicity, and rhabdomyolysis.",
     investigation_id: str = None,
+    conversation_history: list[dict] = None,
 ) -> PharmaVigilState:
     """Run a full multi-agent investigation.
     
@@ -155,6 +156,7 @@ async def run_investigation(
         "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query": query,
+        "conversation_history": conversation_history or [],
         "route": "",
         "extracted_drug": "",
         "extracted_reaction": "",
@@ -196,6 +198,7 @@ async def run_investigation(
 async def stream_investigation(
     query: str = "Scan for any emerging drug safety signals in the FAERS database from the last 90 days.",
     investigation_id: str = None,
+    conversation_history: list[dict] = None,
 ):
     """Stream investigation progress for real-time UI updates.
     
@@ -209,6 +212,7 @@ async def stream_investigation(
         "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query": query,
+        "conversation_history": conversation_history or [],
         "route": "",
         "extracted_drug": "",
         "extracted_reaction": "",

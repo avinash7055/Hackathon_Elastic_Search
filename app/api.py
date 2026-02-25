@@ -15,7 +15,7 @@ import uuid
 import asyncio
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +51,7 @@ class InvestigateRequest(BaseModel):
         "event reporting, particularly for serious reactions like cardiac events, "
         "hepatotoxicity, and rhabdomyolysis."
     )
+    conversation_history: Optional[List[dict]] = []
 
 
 class InvestigateResponse(BaseModel):
@@ -171,7 +172,7 @@ async def start_investigation(request: InvestigateRequest):
     }
 
     # Run investigation in background
-    asyncio.create_task(_run_investigation_background(investigation_id, request.query))
+    asyncio.create_task(_run_investigation_background(investigation_id, request.query, request.conversation_history or []))
 
     return InvestigateResponse(
         investigation_id=investigation_id,
@@ -180,10 +181,10 @@ async def start_investigation(request: InvestigateRequest):
     )
 
 
-async def _run_investigation_background(investigation_id: str, query: str):
+async def _run_investigation_background(investigation_id: str, query: str, conversation_history: list[dict] = None):
     """Background task to run the multi-agent investigation."""
     try:
-        async for event in stream_investigation(query=query, investigation_id=investigation_id):
+        async for event in stream_investigation(query=query, investigation_id=investigation_id, conversation_history=conversation_history or []):
             # event is a dict with node_name -> state_update
             for node_name, state_update in event.items():
                 logger.info(f"[{investigation_id}] Node '{node_name}' completed")

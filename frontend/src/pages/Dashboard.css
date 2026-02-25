@@ -200,6 +200,8 @@
     border: none;
     border-bottom: 1px solid var(--glass-border);
     flex-shrink: 0;
+    position: relative;
+    z-index: var(--z-sticky);
 }
 
 .chat-header-title {
@@ -332,8 +334,8 @@
 }
 
 .chat-avatar-user {
-    background: linear-gradient(135deg, var(--accent-primary), #d49a1e);
-    color: var(--bg-primary);
+    background: linear-gradient(135deg, var(--accent-primary), #059669);
+    color: white;
     box-shadow: 0 4px 14px rgba(var(--accent-primary-rgb), 0.25);
 }
 
@@ -353,8 +355,8 @@
 }
 
 .chat-bubble-user {
-    background: linear-gradient(135deg, var(--accent-primary), #d49a1e);
-    color: var(--bg-primary);
+    background: linear-gradient(135deg, var(--accent-primary), #059669);
+    color: white;
     font-weight: 500;
     border-radius: var(--radius-lg) var(--radius-sm) var(--radius-lg) var(--radius-lg);
     box-shadow: 0 4px 20px rgba(var(--accent-primary-rgb), 0.2);
@@ -479,15 +481,17 @@
     border-radius: var(--radius-sm);
 }
 
-/* ── Typing Indicator Card ───────────────────────────────────────── */
+.thinking-message-cycle {
+    animation: fadeInMessage 0.6s ease;
+}
 
-.chat-typing-card {
+/* ── Typing Bubble ───────────────────────────────────────────────── */
+
+.chat-typing-bubble {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-md);
-    padding: 0.75rem var(--space-lg);
-    border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
-    font-size: 0.82rem;
+    padding: 0.4rem 0;
+    animation: fadeInUp 0.3s ease both;
 }
 
 /* ── Typing Dots ─────────────────────────────────────────────────── */
@@ -532,6 +536,18 @@
     30% {
         transform: translateY(-6px);
         opacity: 1;
+    }
+}
+
+@keyframes fadeInMessage {
+    0% {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
@@ -881,8 +897,8 @@
 }
 
 .chat-send-btn.active {
-    background: linear-gradient(135deg, var(--accent-primary), #d49a1e);
-    color: var(--bg-primary);
+    background: linear-gradient(135deg, var(--accent-primary), #059669);
+    color: #ffffff;
     border-color: transparent;
     box-shadow: 0 4px 20px rgba(var(--accent-primary-rgb), 0.3);
 }
@@ -1054,6 +1070,56 @@
     color: var(--text-primary);
     font-weight: 600;
     background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── PDF Print Mode (light theme for download) ──────────────────── */
+
+.pdf-print-mode {
+    background: #ffffff !important;
+    color: #1a1a2e !important;
+    padding: 2rem !important;
+    border-radius: 0 !important;
+}
+
+.pdf-print-mode h1,
+.pdf-print-mode h2 {
+    color: #1a1a2e !important;
+    border-bottom: 2px solid #2563eb !important;
+    padding-bottom: 0.5rem !important;
+}
+
+.pdf-print-mode h3 {
+    color: #2563eb !important;
+}
+
+.pdf-print-mode p,
+.pdf-print-mode li,
+.pdf-print-mode span {
+    color: #374151 !important;
+}
+
+.pdf-print-mode strong {
+    color: #111827 !important;
+}
+
+.pdf-print-mode table {
+    border: 1px solid #d1d5db !important;
+}
+
+.pdf-print-mode th {
+    background: #f3f4f6 !important;
+    color: #111827 !important;
+    border-bottom: 2px solid #2563eb !important;
+}
+
+.pdf-print-mode td {
+    border-bottom: 1px solid #e5e7eb !important;
+    color: #374151 !important;
+}
+
+.pdf-print-mode th,
+.pdf-print-mode td {
+    padding: 0.6rem 0.8rem !important;
 }
 
 /* ── Step Content ────────────────────────────────────────────────── */

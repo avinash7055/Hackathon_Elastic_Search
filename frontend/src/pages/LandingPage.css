@@ -109,11 +109,11 @@
     background-image: url('/hero-bg.png');
     background-size: cover;
     background-position: center top;
-    opacity: 0.45;
+    opacity: 0.55;
     z-index: -1;
     pointer-events: none;
-    mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
 }
 
 .hero-section>.container {
@@ -305,8 +305,8 @@
 }
 
 .signal-badge.medium {
-    background: rgba(255, 235, 59, 0.15);
-    color: #ffeb3b;
+    background: rgba(245, 158, 11, 0.12);
+    color: #fbbf24;
 }
 
 /* ── Stats Section ───────────────────────────────────────────────── */
