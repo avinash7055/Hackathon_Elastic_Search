@@ -1,7 +1,7 @@
 """Synthetic FDA FAERS Data Generator.
 
 Generates realistic adverse event reports with embedded safety signals
-that the PharmaVigil agents should detect:
+that the SignalShield agents should detect:
 
 Signal 1: Cardizol-X → cardiac arrhythmia spike (4x baseline, last 90 days)
 Signal 2: Neurofen-Plus → hepatotoxicity in 65+ females (rising trend)

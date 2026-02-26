@@ -1,4 +1,4 @@
-"""LangGraph state schema for PharmaVigil AI investigation workflow.
+"""LangGraph state schema for SignalShield AI investigation workflow.
 
 Defines the typed state that flows through the multi-agent graph:
 Signal Scanner → Case Investigator → Safety Reporter
@@ -55,7 +55,7 @@ class SafetyReport(TypedDict):
     recommended_actions: list[str]
 
 
-class PharmaVigilState(TypedDict):
+class SignalShieldState(TypedDict):
     """Root state for the LangGraph investigation workflow."""
 
     # Investigation metadata

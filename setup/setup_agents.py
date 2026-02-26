@@ -147,10 +147,10 @@ def verify_setup(client: httpx.Client):
                         our_agents.append(a)
                 elif isinstance(a, str) and a in ("master_orchestrator", "signal_scanner", "case_investigator", "safety_reporter"):
                     our_agents.append(a)
-            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/4")
+            logger.info(f"  SignalShield agents registered: {len(our_agents)}/4")
         elif isinstance(agents, dict) and "agents" in agents:
             our_agents = [a for a in agents["agents"] if isinstance(a, dict) and a.get("id", "") in ("master_orchestrator", "signal_scanner", "case_investigator", "safety_reporter")]
-            logger.info(f"  PharmaVigil agents registered: {len(our_agents)}/4")
+            logger.info(f"  SignalShield agents registered: {len(our_agents)}/4")
         else:
             logger.info(f"  Agents response: {str(agents)[:200]}")
     else:
@@ -158,7 +158,7 @@ def verify_setup(client: httpx.Client):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Register PharmaVigil tools and agents")
+    parser = argparse.ArgumentParser(description="Register SignalShield tools and agents")
     parser.add_argument("--kibana-url", required=True, help="Kibana URL")
     parser.add_argument("--api-key", required=True, help="Kibana API key")
     args = parser.parse_args()

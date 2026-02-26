@@ -95,7 +95,7 @@ export default function LandingPage() {
                             <HiOutlineShieldCheck />
                         </div>
                         <div>
-                            <span className="nav-title">PharmaVigil</span>
+                            <span className="nav-title">SignalShield</span>
                             <span className="nav-badge">AI</span>
                         </div>
                     </div>
@@ -162,7 +162,7 @@ export default function LandingPage() {
                                 <div className="preview-dots">
                                     <span /><span /><span />
                                 </div>
-                                <span className="preview-title font-mono text-xs text-muted">PharmaVigil Dashboard</span>
+                                <span className="preview-title font-mono text-xs text-muted">SignalShield Dashboard</span>
                             </div>
                             <div className="preview-body">
                                 <div className="preview-pipeline">
@@ -280,7 +280,7 @@ export default function LandingPage() {
                     <div className="flex items-center gap-md">
                         <HiOutlineShieldCheck style={{ color: 'var(--accent-primary)', fontSize: '1.2rem' }} />
                         <span className="text-sm text-muted">
-                            © 2026 PharmaVigil AI. Built for Elastic Hackathon.
+                            © 2026 SignalShield AI. Built for Elastic Hackathon.
                         </span>
                     </div>
                     <div className="flex gap-lg text-sm text-muted hide-mobile">

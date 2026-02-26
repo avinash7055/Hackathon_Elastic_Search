@@ -1,5 +1,5 @@
 """
-PharmaVigil AI — Comprehensive Scenario Tests
+SignalShield AI — Comprehensive Scenario Tests
 ===============================================
 
 Tests ALL major scenarios of the application:
@@ -113,7 +113,7 @@ def test_api_health(client: httpx.Client):
         data = resp.json()
         log_test(
             "Root endpoint returns welcome message",
-            resp.status_code == 200 and "PharmaVigil" in data.get("name", ""),
+            resp.status_code == 200 and "SignalShield" in data.get("name", ""),
             f"Message: {data.get('name', '')[:60]}"
         )
     except Exception as e:
@@ -305,13 +305,13 @@ def test_out_of_scope(client: httpx.Client):
                 route == "out_of_scope" or
                 "out of scope" in response.lower() or
                 "outside" in response.lower() or
-                "PharmaVigil" in response
+                "SignalShield" in response
             )
 
             log_test(
                 f"[{desc}] → Redirected correctly",
                 is_oos,
-                f"Route: {route} | Has redirect msg: {'PharmaVigil' in response}",
+                f"Route: {route} | Has redirect msg: {'SignalShield' in response}",
                 duration
             )
 
@@ -577,7 +577,7 @@ CATEGORIES = {
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PharmaVigil AI — Scenario Tests")
+    parser = argparse.ArgumentParser(description="SignalShield AI — Scenario Tests")
     parser.add_argument(
         "--category", "-c",
         default="all",
@@ -596,7 +596,7 @@ def main():
     WS_BASE = API_BASE.replace("http://", "ws://").replace("https://", "wss://")
 
     print("=" * 64)
-    print("  🧪 PharmaVigil AI — Comprehensive Scenario Tests")
+    print("  🧪 SignalShield AI — Comprehensive Scenario Tests")
     print(f"  📡 Target: {API_BASE}")
     print(f"  🕐 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 64)

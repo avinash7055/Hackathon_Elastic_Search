@@ -680,7 +680,7 @@ export default function Dashboard() {
                         <HiOutlineShieldCheck />
                     </div>
                     <div>
-                        <span className="nav-title">PharmaVigil</span>
+                        <span className="nav-title">SignalShield</span>
                         <span className="nav-badge">AI</span>
                     </div>
                 </div>
@@ -783,7 +783,7 @@ export default function Dashboard() {
                                 <HiOutlineShieldCheck />
                             </div>
                             <h2 className="heading-md" style={{ color: 'var(--text-bright)' }}>
-                                Welcome to <span className="gradient-text">PharmaVigil AI</span>
+                                Welcome to <span className="gradient-text">SignalShield AI</span>
                             </h2>
                             <p className="text-secondary" style={{ maxWidth: 460, textAlign: 'center', lineHeight: 1.7 }}>
                                 Ask me to scan for drug safety signals, investigate specific drugs,

@@ -1,4 +1,4 @@
-"""LangGraph node functions for the PharmaVigil investigation pipeline.
+"""LangGraph node functions for the SignalShield investigation pipeline.
 
 Routing strategy:
   - Queries needing NO tools (general knowledge, classification, greetings,
@@ -17,7 +17,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.elastic_client import elastic_agent_client
-from app.graph.state import PharmaVigilState
+from app.graph.state import SignalShieldState
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ TOOL_FRIENDLY_MESSAGES = {
 # about the 3 drugs with known safety signals in our synthetic FAERS dataset.
 
 DEMO_DRUG_SIGNALS_CONTEXT = """
-## PharmaVigil Demo Dataset — Known Embedded Safety Signals
+## SignalShield Demo Dataset — Known Embedded Safety Signals
 
 Our FAERS (FDA Adverse Event Reporting System) database contains synthetic data
 for 20 drugs. Three of these drugs have intentionally embedded safety signals
@@ -307,7 +307,7 @@ def _extract_signals_from_response(response_text: str, raw_result: dict = None) 
 
 # ── Master Node (Intelligent Router) ──────────────────────
 
-async def master_node(state: PharmaVigilState) -> dict:
+async def master_node(state: SignalShieldState) -> dict:
     """Master Node: Classifies user intent and routes to the right agent pipeline.
     
     Uses the master_orchestrator Elastic Agent Builder agent for classification.
@@ -328,7 +328,7 @@ async def master_node(state: PharmaVigilState) -> dict:
         # ── Classification via direct Groq call (no tools needed, faster) ──
         # The LLM decides EVERYTHING: greetings, out-of-scope, general, tools, etc.
         classification_system = (
-            "You are a query classifier for PharmaVigil AI, a pharmacovigilance system. "
+            "You are a query classifier for SignalShield AI, a pharmacovigilance system. "
             "Classify the user query into exactly one route and extract any drug/reaction entities. "
             "Respond with ONLY a valid JSON object — no markdown fences, no explanation.\n\n"
             "Our database has these key drugs with known safety signals:\n"
@@ -574,7 +574,7 @@ async def master_node(state: PharmaVigilState) -> dict:
         }
 
 
-async def direct_query_node(state: PharmaVigilState) -> dict:
+async def direct_query_node(state: SignalShieldState) -> dict:
     """Handles quick data queries by routing to the most appropriate Elastic agent.
     
     For drug-specific questions → case_investigator agent
@@ -672,12 +672,12 @@ async def direct_query_node(state: PharmaVigilState) -> dict:
         }
 
 
-async def out_of_scope_node(state: PharmaVigilState) -> dict:
+async def out_of_scope_node(state: SignalShieldState) -> dict:
     """Handles queries outside the pharmacovigilance domain.
 
     Uses Groq LLM to generate a natural, polite redirect — not a static wall.
     The LLM acknowledges the user's question and gently guides them to
-    drug-safety topics PharmaVigil can actually help with.
+    drug-safety topics SignalShield can actually help with.
     """
     query = state.get("query", "")
     logger.info(f"Out of Scope Node: Politely redirecting — '{query[:80]}'")
@@ -693,7 +693,7 @@ async def out_of_scope_node(state: PharmaVigilState) -> dict:
     try:
         redirect_response = await _call_llm_direct(
             system_prompt=(
-                "You are PharmaVigil AI — a specialist drug safety and pharmacovigilance assistant. "
+                "You are SignalShield AI — a specialist drug safety and pharmacovigilance assistant. "
                 "The user has asked a question that is outside your domain. "
                 "Respond in 2-3 short sentences MAX. Be warm, polite, and professional. "
                 "Briefly acknowledge their question, then explain you specialize in drug safety. "
@@ -708,7 +708,7 @@ async def out_of_scope_node(state: PharmaVigilState) -> dict:
     except Exception as e:
         logger.warning(f"Out-of-scope LLM call failed, using fallback: {e}")
         redirect_response = (
-            f"That's an interesting question, but I'm PharmaVigil AI — I specialize in "
+            f"That's an interesting question, but I'm SignalShield AI — I specialize in "
             f"drug safety and pharmacovigilance. Try asking me something like "
             f"\"Investigate Cardizol-X for cardiac safety signals\" and I can help!"
         )
@@ -722,7 +722,7 @@ async def out_of_scope_node(state: PharmaVigilState) -> dict:
     }
 
 
-async def greeting_node(state: PharmaVigilState) -> dict:
+async def greeting_node(state: SignalShieldState) -> dict:
     """Handles greetings and conversational openers with a natural LLM response."""
     query = state.get("query", "")
     logger.info(f"Greeting Node: Responding naturally — '{query[:80]}'")
@@ -738,7 +738,7 @@ async def greeting_node(state: PharmaVigilState) -> dict:
     try:
         greeting_response = await _call_llm_direct(
             system_prompt=(
-                "You are PharmaVigil AI — a friendly, professional drug safety and "
+                "You are SignalShield AI — a friendly, professional drug safety and "
                 "pharmacovigilance assistant. The user is greeting you or asking a "
                 "conversational question. Respond warmly and naturally in 2-4 sentences. "
                 "Briefly introduce what you can do (drug safety signals, investigations, "
@@ -758,7 +758,7 @@ async def greeting_node(state: PharmaVigilState) -> dict:
     except Exception as e:
         logger.warning(f"Greeting LLM call failed, using fallback: {e}")
         greeting_response = (
-            "Hey there! I'm PharmaVigil AI, your drug safety assistant. "
+            "Hey there! I'm SignalShield AI, your drug safety assistant. "
             "I can help you scan for safety signals, investigate specific drugs, "
             "and generate regulatory reports. How can I help you today?"
         )
@@ -771,7 +771,7 @@ async def greeting_node(state: PharmaVigilState) -> dict:
     }
 
 
-async def general_knowledge_node(state: PharmaVigilState) -> dict:
+async def general_knowledge_node(state: SignalShieldState) -> dict:
     """Answers general pharmacovigilance / drug-label questions.
 
     Uses Groq LLM DIRECTLY — no Elastic Agent Builder, no tool calls.
@@ -881,7 +881,7 @@ async def general_knowledge_node(state: PharmaVigilState) -> dict:
     # ── Answer via Groq directly (no tools) ──────────────────────────────
     try:
         system_prompt = (
-            "You are PharmaVigil AI — a specialist pharmacovigilance and drug safety assistant. "
+            "You are SignalShield AI — a specialist pharmacovigilance and drug safety assistant. "
             "Answer questions clearly, accurately, and concisely using markdown formatting. "
             "When context from the knowledge base is provided, use it to ground your answer "
             "and cite document titles where relevant. "
@@ -935,7 +935,7 @@ async def general_knowledge_node(state: PharmaVigilState) -> dict:
         }
 
 
-async def scan_signals_node(state: PharmaVigilState) -> dict:
+async def scan_signals_node(state: SignalShieldState) -> dict:
     """Node 1: Call Signal Scanner agent to detect emerging safety signals."""
     logger.info("Node: scan_signals — Starting signal surveillance")
 
@@ -1021,7 +1021,7 @@ async def scan_signals_node(state: PharmaVigilState) -> dict:
         }
 
 
-async def investigate_cases_node(state: PharmaVigilState) -> dict:
+async def investigate_cases_node(state: SignalShieldState) -> dict:
     """Node 2: Call Case Investigator agent for each flagged signal.
     
     Also handles direct investigation requests from the Master Node
@@ -1167,7 +1167,7 @@ async def investigate_cases_node(state: PharmaVigilState) -> dict:
     }
 
 
-async def generate_reports_node(state: PharmaVigilState) -> dict:
+async def generate_reports_node(state: SignalShieldState) -> dict:
     """Node 3: Call Safety Reporter agent to generate formal reports."""
     logger.info("Node: generate_reports — Generating safety assessment reports")
 
@@ -1303,7 +1303,7 @@ async def generate_reports_node(state: PharmaVigilState) -> dict:
     }
 
 
-async def compile_results_node(state: PharmaVigilState) -> dict:
+async def compile_results_node(state: SignalShieldState) -> dict:
     """Final node: Compile all results into the investigation summary."""
     logger.info("Node: compile_results — Finalizing investigation")
 

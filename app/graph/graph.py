@@ -1,4 +1,4 @@
-"""LangGraph StateGraph definition for PharmaVigil AI.
+"""LangGraph StateGraph definition for SignalShield AI.
 
 Defines the investigation workflow with intelligent routing via Master Node:
   START → Master Node → (route classification)
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.graph.state import PharmaVigilState
+from app.graph.state import SignalShieldState
 from app.graph.nodes import (
     master_node,
     scan_signals_node,
@@ -32,7 +32,7 @@ from app.graph.nodes import (
 logger = logging.getLogger(__name__)
 
 
-def route_after_master(state: PharmaVigilState) -> str:
+def route_after_master(state: SignalShieldState) -> str:
     """Conditional edge: Master Node routes to the appropriate pipeline."""
     route = state.get("route", "full_scan")
     logger.info(f"Master routing decision: {route}")
@@ -56,7 +56,7 @@ def route_after_master(state: PharmaVigilState) -> str:
         return "scan_signals"
 
 
-def should_investigate(state: PharmaVigilState) -> str:
+def should_investigate(state: SignalShieldState) -> str:
     """Conditional edge: continue to investigation only if signals found."""
     signals = state.get("signals", [])
     if signals and len(signals) > 0:
@@ -68,9 +68,9 @@ def should_investigate(state: PharmaVigilState) -> str:
 
 
 def build_graph() -> StateGraph:
-    """Build the PharmaVigil investigation StateGraph with Master Node routing."""
+    """Build the SignalShield investigation StateGraph with Master Node routing."""
 
-    graph = StateGraph(PharmaVigilState)
+    graph = StateGraph(SignalShieldState)
 
     # Add nodes
     graph.add_node("master", master_node)
@@ -138,7 +138,7 @@ async def run_investigation(
     query: str = "Scan for any emerging drug safety signals in the FAERS database from the last 90 days. Look for drugs with unusual spikes in adverse event reporting, particularly for serious reactions like cardiac events, hepatotoxicity, and rhabdomyolysis.",
     investigation_id: str = None,
     conversation_history: list[dict] = None,
-) -> PharmaVigilState:
+) -> SignalShieldState:
     """Run a full multi-agent investigation.
     
     Args:
@@ -151,7 +151,7 @@ async def run_investigation(
     if investigation_id is None:
         investigation_id = f"INV-{uuid.uuid4().hex[:8].upper()}"
 
-    initial_state: PharmaVigilState = {
+    initial_state: SignalShieldState = {
         "investigation_id": investigation_id,
         "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -207,7 +207,7 @@ async def stream_investigation(
     if investigation_id is None:
         investigation_id = f"INV-{uuid.uuid4().hex[:8].upper()}"
 
-    initial_state: PharmaVigilState = {
+    initial_state: SignalShieldState = {
         "investigation_id": investigation_id,
         "status": "routing",
         "started_at": datetime.now(timezone.utc).isoformat(),

@@ -61,7 +61,7 @@ export default function AuthPage() {
                             <HiOutlineShieldCheck />
                         </div>
                         <h2 className="heading-md" style={{ marginTop: 'var(--space-lg)' }}>
-                            PharmaVigil <span className="gradient-text">AI</span>
+                            SignalShield <span className="gradient-text">AI</span>
                         </h2>
                         <p className="text-secondary" style={{ marginTop: 'var(--space-md)', lineHeight: 1.7 }}>
                             Autonomous drug safety signal detection powered by multi-agent AI.

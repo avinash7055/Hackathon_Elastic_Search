@@ -1,4 +1,4 @@
-"""FastAPI backend for PharmaVigil AI.
+"""FastAPI backend for SignalShield AI.
 
 Exposes REST endpoints for the React dashboard:
 - POST /api/investigate — trigger a full multi-agent investigation
@@ -89,7 +89,7 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("   PharmaVigil AI — Starting")
+    logger.info("   SignalShield AI — Starting")
     logger.info("   Autonomous Drug Safety Signal Detection")
     logger.info("=" * 60)
 
@@ -105,14 +105,14 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Shutting down PharmaVigil AI...")
+    logger.info("Shutting down SignalShield AI...")
     await elastic_agent_client.close()
 
 
 # ── FastAPI App ──────────────────────────────────────────
 
 app = FastAPI(
-    title="PharmaVigil AI",
+    title="SignalShield AI",
     description=(
         "Autonomous drug safety signal detection system. "
         "Multi-agent pharmacovigilance powered by Elastic Agent Builder + LangGraph."
@@ -386,7 +386,7 @@ else:
     @app.get("/")
     async def root():
         return {
-            "name": "PharmaVigil AI System API",
+            "name": "SignalShield AI System API",
             "version": "1.0.0",
             "status": "Frontend not mounted. Run `npm run build` in the frontend directory.",
             "docs": "/docs",

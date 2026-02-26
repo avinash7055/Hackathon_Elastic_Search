@@ -27,7 +27,7 @@ jobs:
           file: ./Dockerfile
           push: false # Don't push to a registry, just prove it builds successfully
           load: true  # Load image to the local Docker daemon so it can run
-          tags: pharmavigil-app:latest
+          tags: AegisRx-app:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -35,7 +35,7 @@ jobs:
       - name: Test Container Startup
         run: |
           # Run the container in the background detached
-          docker run -d --name test-app -p 8000:8000 pharmavigil-app:latest
+          docker run -d --name test-app -p 8000:8000 AegisRx-app:latest
           
           # Wait a few seconds for FastAPI to start up
           sleep 5

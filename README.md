@@ -1,4 +1,4 @@
-# PharmaVigil AI 💊🔍
+# SignalShield AI 💊🔍
 
 **Autonomous Drug Safety & Pharmacovigilance System** — A multi-agent AI system that detects safety signals, investigates adverse events, generates regulatory reports, and answers complex drug-label questions using FDA FAERS data and RAG in **under 30 seconds**.
 
@@ -18,7 +18,7 @@ Pharmacovigilance — monitoring drugs for adverse effects after market approval
 
 ## 💡 The Solution
 
-PharmaVigil AI deploys **4 specialized AI Agents** orchestrated by LangGraph, powered by Elastic Agent Builder, ELSER Semantic Search, and Groq LLM (Llama 3.3 70B):
+SignalShield AI deploys **4 specialized AI Agents** orchestrated by LangGraph, powered by Elastic Agent Builder, ELSER Semantic Search, and Groq LLM (Llama 3.3 70B):
 
 | Agent | Role | Capabilities |
 |---|---|---|
@@ -138,7 +138,7 @@ Hackathon_Elastic_Search/
 │   └── graph/                    # LangGraph orchestration
 │       ├── graph.py              # StateGraph definition & routing logic
 │       ├── nodes.py              # All agent node functions (1300+ lines)
-│       └── state.py              # Typed state schema (PharmaVigilState)
+│       └── state.py              # Typed state schema (SignalShieldState)
 ├── frontend/                     # React frontend (Vite)
 │   ├── index.html                # Entry point
 │   ├── vite.config.js            # Vite configuration
@@ -269,10 +269,10 @@ The application ships with a multi-stage `Dockerfile` that builds the React fron
 
 ```bash
 # Build the image
-docker build -t pharmavigil-app .
+docker build -t signalshield-app .
 
 # Run the container
-docker run -p 8000:8000 --env-file .env pharmavigil-app
+docker run -p 8000:8000 --env-file .env signalshield-app
 ```
 
 Open **[http://localhost:8000](http://localhost:8000)** — the compiled frontend is served from the same port.
