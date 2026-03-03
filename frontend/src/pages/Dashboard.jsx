@@ -384,6 +384,7 @@ export default function Dashboard() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [showUserMenu, setShowUserMenu] = useState(false);
+    const [showServiceBanner, setShowServiceBanner] = useState(true);
 
     const wsRef = useRef(null);
     const messagesEndRef = useRef(null);
@@ -668,6 +669,8 @@ export default function Dashboard() {
     };
 
     const isHealthy = health?.status === 'healthy';
+    const isDegraded = health && health.status !== 'healthy' && health.status !== 'offline';
+    const healthMessage = health?.message || '';
 
     return (
         <div className="chatbot-layout">
@@ -706,13 +709,21 @@ export default function Dashboard() {
                 </div>
 
                 <div className="sidebar-footer">
-                    <div className="sidebar-health">
+                    <div className="sidebar-health" title={healthMessage}>
                         <FiActivity style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }} />
                         <span className="text-xs" style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
                             {health ? health.status : 'Checking...'}
                         </span>
                         <span className={`health-dot ${isHealthy ? 'healthy' : 'offline'}`} />
                     </div>
+                    {isDegraded && (
+                        <div className="sidebar-health-msg">
+                            <FiAlertTriangle style={{ color: 'var(--accent-warning)', flexShrink: 0, marginTop: 2 }} />
+                            <span className="text-xs" style={{ color: 'var(--accent-warning)', lineHeight: 1.4 }}>
+                                Elastic Cloud service may be expired or suspended.
+                            </span>
+                        </div>
+                    )}
 
                     <div className="sidebar-user-info-row">
                         <div className="user-avatar">{user?.avatar || '?'}</div>
@@ -741,7 +752,7 @@ export default function Dashboard() {
                         <span className="heading-sm">Drug Safety Investigation</span>
                     </div>
                     <div className="chat-header-actions">
-                        <div className="health-indicator" style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }}>
+                        <div className="health-indicator" style={{ color: isHealthy ? 'var(--accent-secondary)' : 'var(--accent-warning)' }} title={healthMessage}>
                             <FiActivity />
                             <span className="text-xs">{health ? health.status : '...'}</span>
                         </div>
@@ -774,6 +785,20 @@ export default function Dashboard() {
                         </div>
                     </div>
                 </header>
+
+                {/* Service Expired Banner */}
+                {isDegraded && showServiceBanner && (
+                    <div className="service-banner">
+                        <div className="service-banner-content">
+                            <FiAlertTriangle className="service-banner-icon" />
+                            <div className="service-banner-text">
+                                <strong>Service Degraded</strong>
+                                <span>{healthMessage}</span>
+                            </div>
+                            <button className="service-banner-close" onClick={() => setShowServiceBanner(false)}>✕</button>
+                        </div>
+                    </div>
+                )}
 
                 {/* Messages */}
                 <div className="chat-messages-area">

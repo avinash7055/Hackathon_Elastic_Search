@@ -78,6 +78,7 @@ class ReportResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    message: str
     kibana: dict
     agents_registered: int
     tools_registered: int
@@ -139,11 +140,35 @@ app.add_middleware(
 async def health_check():
     """System health check."""
     kibana_health = await elastic_agent_client.health_check()
-    agents = await elastic_agent_client.list_agents() if kibana_health.get("status") == "connected" else []
-    tools = await elastic_agent_client.list_tools() if kibana_health.get("status") == "connected" else []
+    kibana_status = kibana_health.get("status")
+    is_connected = kibana_status == "connected"
+
+    if is_connected:
+        agents = await elastic_agent_client.list_agents()
+        tools = await elastic_agent_client.list_tools()
+        message = "All systems operational."
+    else:
+        agents = []
+        tools = []
+        kibana_error = kibana_health.get("error", "")
+        if "getaddrinfo failed" in kibana_error or kibana_status == "unreachable":
+            message = (
+                "⚠️ Unable to reach Elastic Cloud. Your Elastic Cloud trial or API key "
+                "may have expired, or the project may be suspended. Please check your "
+                "Elastic Cloud console at https://cloud.elastic.co and ensure your project "
+                "is active and the API credentials in the .env file are valid."
+            )
+        elif kibana_status == "error":
+            message = (
+                "⚠️ Elastic Cloud returned an error (HTTP {}). Please verify your API key "
+                "is valid and has the correct permissions.".format(kibana_health.get("code", "unknown"))
+            )
+        else:
+            message = "⚠️ Service is currently unavailable. Please check your configuration."
 
     return HealthResponse(
-        status="healthy" if kibana_health.get("status") == "connected" else "degraded",
+        status="healthy" if is_connected else "degraded",
+        message=message,
         kibana=kibana_health,
         agents_registered=len(agents),
         tools_registered=len(tools),

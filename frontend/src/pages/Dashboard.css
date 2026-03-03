@@ -137,6 +137,81 @@
     background: var(--accent-warning);
 }
 
+/* ── Service Degraded Banner ─────────────────────────────────────── */
+
+.service-banner {
+    padding: 0 var(--space-xl);
+    flex-shrink: 0;
+}
+
+.service-banner-content {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-md);
+    padding: var(--space-md) var(--space-lg);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: var(--radius-md);
+    margin-top: var(--space-md);
+    animation: fadeInUp 0.4s ease both;
+}
+
+.service-banner-icon {
+    color: var(--accent-warning);
+    font-size: 1.1rem;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.service-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.service-banner-text strong {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--accent-warning);
+}
+
+.service-banner-text span {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.5;
+}
+
+.service-banner-close {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+    transition: all var(--transition-fast);
+}
+
+.service-banner-close:hover {
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Sidebar Health Message ──────────────────────────────────────── */
+
+.sidebar-health-msg {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    background: rgba(245, 158, 11, 0.06);
+    border: 1px solid rgba(245, 158, 11, 0.12);
+    border-radius: var(--radius-sm);
+}
+
 .sidebar-user-info-row {
     display: flex;
     align-items: center;
